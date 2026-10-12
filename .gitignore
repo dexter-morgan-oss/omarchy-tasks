@@ -1,0 +1,17 @@
+# Build output
+/tasks-gui
+/tasks-gui-*
+*.o
+*.pkg.tar.*
+/pkg/
+/src/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+

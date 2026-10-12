@@ -1,0 +1,27 @@
+post_install() {
+  cat <<'EOF'
+Tasks is installed.
+
+  tasks-gui        GTK4 GUI
+  tasks            CLI/TUI (tasks add/list/done/rm)
+
+To add the launcher entry, the Omarchy menu row and the Super+Shift+T
+keybinding, run this as your normal user (not root):
+
+    tasks-setup-user
+
+Then launch Tasks with Super + Shift + T.
+EOF
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  cat <<'EOF'
+Tasks removed. Your tasks are kept in ~/.local/share/tasks/tasks.json
+and the Super+Shift+T binding was left in ~/.config/hypr/bindings.lua.
+Remove the binding by hand or run: tasks-setup-user --help
+EOF
+}

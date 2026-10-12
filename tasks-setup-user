@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# tasks-setup-user — wire up per-user desktop integration for Tasks.
+#
+# Everything this does lives under $HOME and needs no root:
+#   * ~/.local/share/applications/org.omarchy.tasks.desktop
+#   * ~/.config/omarchy/extensions/omarchy-menu.jsonc   (created if absent)
+#   * a SUPER+SHIFT+T binding in ~/.config/hypr/bindings.lua
+#
+# It is idempotent: running it again changes nothing that is already set up.
+#
+# Usage: tasks-setup-user [path-to-tasks-gui]
+set -euo pipefail
+
+say() { printf '%s\n' "$*"; }
+
+# Locate the GUI binary: explicit argument, else $PATH, else the user install.
+GUI="${1:-}"
+if [[ -z $GUI ]]; then
+  if command -v tasks-gui >/dev/null 2>&1; then
+    GUI="$(command -v tasks-gui)"
+  else
+    GUI="$HOME/.local/bin/tasks-gui"
+  fi
+fi
+if [[ ! -x $GUI ]]; then
+  say "warning: '$GUI' is not executable; the launcher will not work until it is."
+fi
+
+LAUNCH="omarchy-launch-or-focus org.omarchy.tasks 'uwsm-app -- $GUI'"
+
+# --- 1. .desktop entry -------------------------------------------------------
+APPS="$HOME/.local/share/applications"
+mkdir -p "$APPS"
+DESKTOP="$APPS/org.omarchy.tasks.desktop"
+cat > "$DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Tasks
+GenericName=Task Manager
+Comment=Minimal GUI task manager
+Exec=omarchy-launch-or-focus org.omarchy.tasks "uwsm-app -- $GUI"
+Terminal=false
+Icon=org.omarchy.tasks
+Categories=Utility;Office;
+Keywords=task;todo;productivity;gui;
+StartupNotify=true
+StartupWMClass=org.omarchy.tasks
+EOF
+say "installed $DESKTOP"
+
+# --- 2. Omarchy menu extension ----------------------------------------------
+MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+if [[ -f $MENU ]]; then
+  if grep -q '"tasks"' "$MENU"; then
+    say "menu entry already present in $MENU"
+  else
+    say "note: $MENU already exists but has no \"tasks\" entry."
+    say "      Add this to its top-level object to get a launcher row:"
+    say ''
+    say '      "tasks": {'
+    say '        "icon": "󰄉",'
+    say '        "label": "Tasks",'
+    say "        \"action\": \"$LAUNCH\","
+    say '        "aliases": ["todo", "task manager"],'
+    say '        "description": "Minimal GUI task manager"'
+    say '      }'
+    say ''
+  fi
+else
+  mkdir -p "$(dirname "$MENU")"
+  cat > "$MENU" <<EOF
+{
+  // Created by tasks-setup-user; add further Omarchy menu entries here.
+  "tasks": {
+    "icon": "󰄉",
+    "label": "Tasks",
+    "action": "$LAUNCH",
+    "aliases": ["todo", "task manager"],
+    "description": "Minimal GUI task manager"
+  }
+}
+EOF
+  say "created $MENU"
+fi
+
+# --- 3. Hyprland keybinding --------------------------------------------------
+BIND="$HOME/.config/hypr/bindings.lua"
+if [[ -f $BIND ]]; then
+  if grep -q 'org\.omarchy\.tasks' "$BIND"; then
+    say "keybinding already present in $BIND"
+  else
+    cp "$BIND" "$BIND.bak.$(date +%s)"
+    UNBIND=''
+    if grep -qE 'SUPER \+ SHIFT \+ T' "$BIND"; then
+      # Per Omarchy convention, unbind the key first when overriding it.
+      UNBIND='hl.unbind("SUPER + SHIFT + T")'
+      say "note: SUPER + SHIFT + T was already bound; unbinding before rebinding."
+    fi
+    {
+      echo ''
+      echo '-- Tasks: minimal GUI task manager (GTK4, opens/focuses window)'
+      [[ -n $UNBIND ]] && echo "$UNBIND"
+      printf 'o.bind("SUPER + SHIFT + T", "Tasks", "%s")\n' "$LAUNCH"
+    } >> "$BIND"
+    say "added SUPER + SHIFT + T -> Tasks in $BIND"
+  fi
+else
+  say "note: $BIND not found (not an Omarchy/Hyprland setup?)."
+  say "      Add this to your Hyprland keybindings manually:"
+  say "      o.bind(\"SUPER + SHIFT + T\", \"Tasks\", \"$LAUNCH\")"
+fi
+
+# --- 4. Reload and validate Hyprland ----------------------------------------
+if command -v hyprctl >/dev/null 2>&1 && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+  hyprctl reload >/dev/null 2>&1 || true
+  errs="$(hyprctl configerrors 2>/dev/null || true)"
+  if [[ -n $errs ]]; then
+    say "warning: hyprctl configerrors reported:"
+    say "$errs"
+  else
+    say "hyprctl reload OK (no config errors)"
+  fi
+else
+  say "note: no running Hyprland session detected; run 'hyprctl reload' after login."
+fi
+
+say ''
+say "Done. Launch Tasks with Super + Shift + T, or type 'tasks' in the launcher."
