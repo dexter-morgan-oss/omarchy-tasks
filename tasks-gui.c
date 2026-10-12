@@ -135,6 +135,13 @@ struct App {
     GPtrArray *undo;
     /* most recent day a due notification was considered */
     gchar *last_due_notify;
+    /* rotating shortcut ticker at the bottom */
+    GtkWidget *hint_stack;
+    GtkWidget *hint_a;
+    GtkWidget *hint_b;
+    gint hint_idx;
+    gboolean hint_flip;
+    guint hint_timer;
 };
 
 /* ---- small helpers ---------------------------------------------------- */
@@ -2119,6 +2126,55 @@ static Column *build_column(App *a, gint status) {
     return col;
 }
 
+/* ---- rotating shortcut ticker -------------------------------------------- */
+
+/* Shown one at a time at the bottom, loading-screen style, so the board stays
+   uncluttered. Keep each tip self-contained: it must read well on its own. */
+static const char *HINTS[] = {
+    "Ctrl + N   new task at the top of To Do",
+    "Ctrl + F   search across all columns",
+    "Ctrl + Z   undo the last delete or clear",
+    "Ctrl + Shift + D   clear all completed tasks",
+    "Delete  —  remove the card you clicked",
+    "Drag a card between columns to move or complete it",
+    "Right-click a card for rename, due date, priority, delete",
+    "Click the coloured dot to cycle priority: high / med / low",
+    "F11  fullscreen",
+};
+#define HINT_COUNT (gint)(sizeof(HINTS) / sizeof(HINTS[0]))
+
+/* Advance the ticker one step. Split out from the timer callback so tests can
+   drive it deterministically. */
+static void hint_show_next(App *a) {
+    if (!a->hint_stack) return;
+    GtkWidget *target = a->hint_flip ? a->hint_a : a->hint_b;
+    gtk_label_set_text(GTK_LABEL(target), HINTS[a->hint_idx]);
+    gtk_stack_set_visible_child(GTK_STACK(a->hint_stack), target);
+    a->hint_flip = !a->hint_flip;
+    a->hint_idx = (a->hint_idx + 1) % (gint)G_N_ELEMENTS(HINTS);
+}
+
+static GtkWidget *make_hint_label(const gchar *text) {
+    GtkWidget *lbl = gtk_label_new(text);
+    gtk_widget_add_css_class(lbl, "hint-label");
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.5);
+    gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_margin_start(lbl, 10);
+    gtk_widget_set_margin_end(lbl, 10);
+    gtk_widget_set_margin_bottom(lbl, 8);
+    return lbl;
+}
+
+/* Rotate only while the window is focused, so a background board isn't
+   animating forever. */
+static gboolean hint_tick(gpointer ud) {
+    App *a = ud;
+    if (a->win && GTK_IS_WINDOW(a->win) &&
+        gtk_window_is_active(GTK_WINDOW(a->win)))
+        hint_show_next(a);
+    return G_SOURCE_CONTINUE;
+}
+
 static void build_window(App *a) {
     theme_apply(a);
     GtkWidget *win = gtk_application_window_new(a->gapp);
@@ -2164,20 +2220,24 @@ static void build_window(App *a) {
     gtk_box_append(GTK_BOX(root), search);
     gtk_box_append(GTK_BOX(root), main);
 
-    /* persistent shortcut hints strip */
-    GtkWidget *hints = gtk_label_new(
-        "Shortcuts:  Ctrl+N new  ·  Ctrl+F search  ·  Ctrl+Z undo  ·  "
-        "Ctrl+Shift+D clear done  ·  Del remove selected  ·  "
-        "drag a card to move / complete  ·  "
-        "right-click a card for rename / due / delete  ·  F11 fullscreen");
-    gtk_widget_add_css_class(hints, "hint-label");
+    /* rotating shortcut ticker: one quiet tip, crossfading to the next, so the
+       bottom edge stays calm instead of listing every key at once. */
+    GtkWidget *hints = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(hints),
+                                  GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(hints), 450);
     gtk_widget_add_css_class(hints, "hints");
-    gtk_label_set_xalign(GTK_LABEL(hints), 0.0);
-    gtk_label_set_wrap(GTK_LABEL(hints), TRUE);
-    gtk_widget_set_margin_start(hints, 10);
-    gtk_widget_set_margin_end(hints, 10);
-    gtk_widget_set_margin_bottom(hints, 8);
+    a->hint_a = make_hint_label(HINTS[0]);
+    a->hint_b = make_hint_label("");
+    gtk_stack_add_child(GTK_STACK(hints), a->hint_a);
+    gtk_stack_add_child(GTK_STACK(hints), a->hint_b);
+    gtk_stack_set_visible_child(GTK_STACK(hints), a->hint_a);
+    a->hint_stack = hints;
+    a->hint_idx = 1;          /* HINTS[0] already shown */
+    a->hint_flip = FALSE;     /* next tip goes to the hidden label, hint_b */
+    gtk_widget_set_margin_bottom(hints, 6);
     gtk_box_append(GTK_BOX(root), hints);
+    a->hint_timer = g_timeout_add_seconds(6, hint_tick, a);
 
     gtk_window_set_child(GTK_WINDOW(win), root);
 
@@ -2704,6 +2764,43 @@ static void selftest_run(App *a) {
             h = on_window_key(NULL, GDK_KEY_d, 0, GDK_CONTROL_MASK, a);
             CHECK(h && a->store.tasks->len == before - 1,
                   "Ctrl+D deletes selected task");
+        }
+    }
+
+    /* 15b. rotating shortcut ticker */
+    {
+        CHECK(a->hint_stack != NULL, "ticker stack built");
+        if (a->hint_stack) {
+            CHECK(gtk_stack_get_visible_child(GTK_STACK(a->hint_stack)) ==
+                      a->hint_a &&
+                  g_strcmp0(gtk_label_get_text(GTK_LABEL(a->hint_a)),
+                            HINTS[0]) == 0,
+                  "ticker starts on the first tip");
+            hint_show_next(a);
+            CHECK(gtk_stack_get_visible_child(GTK_STACK(a->hint_stack)) ==
+                      a->hint_b &&
+                  g_strcmp0(gtk_label_get_text(GTK_LABEL(a->hint_b)),
+                            HINTS[1]) == 0,
+                  "ticker crossfades to the next tip");
+            hint_show_next(a);
+            CHECK(gtk_stack_get_visible_child(GTK_STACK(a->hint_stack)) ==
+                      a->hint_a &&
+                  g_strcmp0(gtk_label_get_text(GTK_LABEL(a->hint_a)),
+                            HINTS[2]) == 0,
+                  "ticker alternates labels");
+            /* one full lap shows every tip (bitmask over the tip list) */
+            gint n = (gint)G_N_ELEMENTS(HINTS);
+            guint seen = 0;
+            for (gint i = 0; i < n; i++) {
+                hint_show_next(a);
+                GtkWidget *v =
+                    gtk_stack_get_visible_child(GTK_STACK(a->hint_stack));
+                const gchar *txt = gtk_label_get_text(GTK_LABEL(v));
+                for (gint k = 0; k < n; k++)
+                    if (g_strcmp0(txt, HINTS[k]) == 0) seen |= (1u << k);
+            }
+            CHECK(seen == ((1u << n) - 1), "ticker cycles through every tip");
+            CHECK(a->hint_timer != 0, "ticker timer is armed");
         }
     }
 
@@ -3353,6 +3450,7 @@ int main(int argc, char **argv) {
     a.gapp = gtk_application_new(APP_ID, G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(a.gapp, "activate", G_CALLBACK(on_activate), &a);
     gint status = g_application_run(G_APPLICATION(a.gapp), argc, argv);
+    if (a.hint_timer) g_source_remove(a.hint_timer);
     g_object_unref(a.gapp);
     store_free(&a.store);
     if (a.popovers) g_ptr_array_free(a.popovers, TRUE);

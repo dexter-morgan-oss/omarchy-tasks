@@ -49,8 +49,9 @@ green (low) — plus a small dot on the right; click the dot to cycle.
 The board uses Omarchy's monospace face (**JetBrainsMono Nerd Font**) on a deep
 blue **translucent** palette — the window and column panels are semi-transparent
 (alpha-composited over the desktop), and the chrome is deliberately empty — no
-toolbar buttons. A small **shortcuts strip** along the bottom of the window
-lists the keys below. Search is `Ctrl + F`; clearing the Done column is
+toolbar buttons. A **rotating shortcut ticker** along the bottom of the window
+shows the keys below one at a time, crossfading every few seconds (and pausing
+while the window is unfocused). Search is `Ctrl + F`; clearing the Done column is
 `Ctrl + Shift + D` or a **right-click on the Done column header**.
 
 ### Adding

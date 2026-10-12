@@ -24,7 +24,8 @@ JSON store.
 - **Undo** any Delete / Clear Done with `Ctrl+Z`
 - **Due-date notifications** for overdue and due-today tasks (once a day)
 - **Drag-only completion** — no key moves a task between columns
-- A **shortcuts strip** along the bottom of the window lists every key binding
+- A **rotating shortcut ticker** along the bottom of the window shows one tip
+  at a time, crossfading every few seconds (paused while the window is unfocused)
 - Keyboard-driven: `Ctrl+N` add, `Ctrl+F` search, `Ctrl+Shift+D` clear done, `Ctrl+Z` undo, `Del` remove
 - **One JSON file** — no database, no daemon, no server
 
