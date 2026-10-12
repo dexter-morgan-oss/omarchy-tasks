@@ -17,6 +17,7 @@
 
 #define _GNU_SOURCE
 #include <gtk/gtk.h>
+#include <glib/gstdio.h>
 #include <jansson.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,6 +57,24 @@ static const double PRIO_COLORS[3][4] = {
 };
 
 typedef struct App App;
+
+/* Palette parsed from Omarchy's colors.toml. Every field is heap-allocated
+   (theme_clear frees them); `ok` is TRUE only when at least background and
+   foreground were found, so a broken/missing file falls back to the built-in
+   palette. */
+typedef struct {
+    gboolean ok;
+    gboolean light;              /* mode = "light" */
+    gchar *background, *foreground, *accent, *muted, *selection;
+    gchar *light_fg, *bright_fg;
+    gchar *red, *green, *yellow, *orange, *cyan, *blue, *magenta;
+} Theme;
+
+/* One undoable snapshot of the whole store (used by Delete / Clear done). */
+typedef struct {
+    gchar *json;
+    gchar *label;
+} UndoState;
 
 typedef struct Task {
     gint64 id;
@@ -98,6 +117,20 @@ struct App {
     char *data_path;
     gboolean selftest;
     gint selftest_fail;
+    /* config.ini */
+    gboolean follow_theme;
+    gboolean notify_due;
+    gchar *config_path;
+    /* live theme */
+    Theme theme;
+    gchar *theme_path;
+    GFileMonitor *theme_mon;
+    GFileMonitor *theme_dir_mon;
+    /* undo stack (Delete / Clear done) */
+    GPtrArray *undo;
+    GtkWidget *undo_btn;
+    /* most recent day a due notification was considered */
+    gchar *last_due_notify;
 };
 
 /* ---- small helpers ---------------------------------------------------- */
@@ -245,44 +278,40 @@ static Task *task_new(App *a, const char *title, gint prio, const char *due,
 
 /* ---- storage (jansson) ------------------------------------------------ */
 
-static gboolean load_store(App *a) {
-    json_error_t jerr;
-    json_t *root = json_load_file(a->data_path, JSON_PRESERVE_ORDER, &jerr);
-    if (!root) {
-        if (!g_file_test(a->data_path, G_FILE_TEST_EXISTS)) return TRUE;
-        g_warning("tasks: json parse error: %s", jerr.text);
-        return FALSE;
-    }
-    a->store.next_id = (gint)json_integer_value(json_object_get(root, "next_id"));
+/* Append every task in `root` to a->store.tasks and set next_id. The caller
+   must pass an empty tasks array and is responsible for freeing any previous
+   tasks — load_store() does this at startup, and undo swaps in a fresh array
+   before rebuilding the UI (so old Task* are freed only after their rows have
+   been torn down). */
+static void store_append_json(App *a, json_t *root) {
+    json_t *nid = json_object_get(root, "next_id");
+    a->store.next_id = json_is_integer(nid) ? (gint)json_integer_value(nid) : 1;
     if (a->store.next_id < 1) a->store.next_id = 1;
     json_t *tasks = json_object_get(root, "tasks");
-    if (json_is_array(tasks)) {
-        size_t i;
-        json_t *j;
-        json_array_foreach(tasks, i, j) {
-            Task *t = g_new0(Task, 1);
-            t->id = json_integer_value(json_object_get(j, "id"));
-            const char *title = json_string_value(json_object_get(j, "title"));
-            t->title = g_strdup(title ? title : "(untitled)");
-            const char *status_s = json_string_value(json_object_get(j, "status"));
-            if (!status_s)
-                status_s = json_is_true(json_object_get(j, "done")) ? "done" : "todo";
-            t->status = status_index(status_s);
-            const char *prio = json_string_value(json_object_get(j, "priority"));
-            t->prio = prio_index(prio);
-            const char *due = json_string_value(json_object_get(j, "due"));
-            t->due = due ? g_strdup(due) : NULL;
-            const char *cre = json_string_value(json_object_get(j, "created"));
-            t->created = g_strdup(cre ? cre : today_iso());
-            t->app = a;
-            g_array_append_val(a->store.tasks, t);
-        }
+    if (!json_is_array(tasks)) return;
+    size_t i;
+    json_t *j;
+    json_array_foreach(tasks, i, j) {
+        Task *t = g_new0(Task, 1);
+        t->id = (gint64)json_integer_value(json_object_get(j, "id"));
+        const char *title = json_string_value(json_object_get(j, "title"));
+        t->title = g_strdup(title ? title : "(untitled)");
+        const char *st = json_string_value(json_object_get(j, "status"));
+        if (!st)
+            st = json_is_true(json_object_get(j, "done")) ? "done" : "todo";
+        t->status = status_index(st);
+        t->prio = prio_index(json_string_value(json_object_get(j, "priority")));
+        t->due = g_strdup(json_string_value(json_object_get(j, "due")));
+        const char *cre = json_string_value(json_object_get(j, "created"));
+        t->created = cre ? g_strdup(cre) : today_iso();
+        t->app = a;
+        g_array_append_val(a->store.tasks, t);
     }
-    json_decref(root);
-    return TRUE;
 }
 
-static gboolean save_store(App *a) {
+/* Serialise the store exactly as it is written to disk (shared by save_store
+   and the undo snapshots). */
+static json_t *store_to_json(App *a) {
     json_t *root = json_object();
     json_t *tasks = json_array();
     json_object_set_new(root, "next_id", json_integer(a->store.next_id));
@@ -300,6 +329,24 @@ static gboolean save_store(App *a) {
         json_array_append_new(tasks, o);
     }
     json_object_set_new(root, "tasks", tasks);
+    return root;
+}
+
+static gboolean load_store(App *a) {
+    json_error_t jerr;
+    json_t *root = json_load_file(a->data_path, JSON_PRESERVE_ORDER, &jerr);
+    if (!root) {
+        if (!g_file_test(a->data_path, G_FILE_TEST_EXISTS)) return TRUE;
+        g_warning("tasks: json parse error: %s", jerr.text);
+        return FALSE;
+    }
+    store_append_json(a, root);
+    json_decref(root);
+    return TRUE;
+}
+
+static gboolean save_store(App *a) {
+    json_t *root = store_to_json(a);
     g_autofree gchar *dir = g_path_get_dirname(a->data_path);
     g_mkdir_with_parents(dir, 0700);
     gboolean ok = json_dump_file(root, a->data_path, JSON_INDENT(2)) == 0;
@@ -309,7 +356,7 @@ static gboolean save_store(App *a) {
 
 /* ---- theme: dark blue/black, minimal ---------------------------------- */
 
-static const char *THEME_CSS =
+static const char *BUILTIN_CSS =
     "* { outline: none; }\n"
     "window, window.background { background-color: rgba(4, 8, 20, 0.72);\n"
     "         background-image: none; box-shadow: none; color: #cbd6ea;\n"
@@ -357,21 +404,8 @@ static const char *THEME_CSS =
     ".drop-target { background-color: rgba(90,140,255,0.16); border-radius: 12px; }\n"
     ".pop-label { font-size: 12px; color: #93a6c8; }\n";
 
-static void apply_css(void) {
-    GtkCssProvider *p = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(p, THEME_CSS);
-    gtk_style_context_add_provider_for_display(
-        gdk_display_get_default(), GTK_STYLE_PROVIDER(p),
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-}
-
-/* ask GTK for the dark variant so controls sit well inside our dark theme */
-static void prefer_dark(void) {
-    GtkSettings *st = gtk_settings_get_default();
-    GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(st),
-                                                     "gtk-application-prefer-dark-theme");
-    if (pspec) g_object_set(st, "gtk-application-prefer-dark-theme", TRUE, NULL);
-}
+/* The stylesheet is installed by css_apply()/theme_apply() further down, once
+   the config and the active Omarchy palette have been read. */
 
 /* ---- dot widgets ------------------------------------------------------ */
 
@@ -431,6 +465,386 @@ static gboolean rename_key(GtkEventControllerKey *c, guint k, guint kc,
                            GdkModifierType st, gpointer ud);
 static void rename_focus_left(GtkEventControllerFocus *fc, gpointer ud);
 static void apply_due(App *a, Task *t, const char *val);
+
+/* ==== config: ~/.config/omarchy-tasks/config.ini ======================== */
+
+/* Read follow_theme / notify_due from an INI file. A missing file or key
+   keeps the default (both TRUE). A file without a section header is treated
+   as [general], so a bare "notify_due = false" line still works. */
+static void config_load(App *a, const gchar *path) {
+    a->follow_theme = TRUE;
+    a->notify_due = TRUE;
+    g_autofree gchar *data = NULL;
+    gsize len = 0;
+    if (!path || !g_file_get_contents(path, &data, &len, NULL)) return;
+    g_autofree gchar *wrapped = strchr(data, '[')
+        ? g_strdup(data)
+        : g_strconcat("[general]\n", data, NULL);
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_data(kf, wrapped, (gsize)-1, G_KEY_FILE_NONE,
+                                  NULL)) {
+        GError *e = NULL;
+        gboolean v = g_key_file_get_boolean(kf, "general", "follow_theme", &e);
+        if (e) g_clear_error(&e); else a->follow_theme = v;
+        v = g_key_file_get_boolean(kf, "general", "notify_due", &e);
+        if (e) g_clear_error(&e); else a->notify_due = v;
+    }
+    g_key_file_unref(kf);
+}
+
+/* ---- theme: follow the active Omarchy theme ---------------------------- */
+
+static void theme_clear(Theme *t) {
+    g_free(t->background); g_free(t->foreground); g_free(t->accent);
+    g_free(t->muted);      g_free(t->selection);
+    g_free(t->light_fg);   g_free(t->bright_fg);
+    g_free(t->red);  g_free(t->green); g_free(t->yellow); g_free(t->orange);
+    g_free(t->cyan); g_free(t->blue);  g_free(t->magenta);
+    memset(t, 0, sizeof *t);
+}
+
+/* colors.toml is a flat TOML table of `key = "value"` pairs. */
+static void theme_parse(Theme *t, const gchar *path) {
+    theme_clear(t);
+    g_autofree gchar *data = NULL;
+    gsize len = 0;
+    if (!path || !g_file_get_contents(path, &data, &len, NULL)) return;
+    g_auto(GStrv) lines = g_strsplit(data, "\n", -1);
+#define TSET(f) do { g_free(t->f); t->f = g_strdup(val); } while (0)
+    for (gint i = 0; lines[i]; i++) {
+        gchar *line = g_strstrip(lines[i]);
+        if (!*line || *line == '#') continue;
+        gchar *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        gchar *key = g_strstrip(line);
+        gchar *val = g_strstrip(eq + 1);
+        if (*val == '"' || *val == '\'') {
+            gchar q = *val++;
+            gchar *end = strrchr(val, q);
+            if (end) *end = '\0';
+        }
+        if      (!strcmp(key, "background"))        TSET(background);
+        else if (!strcmp(key, "foreground"))        TSET(foreground);
+        else if (!strcmp(key, "accent"))            TSET(accent);
+        else if (!strcmp(key, "muted"))             TSET(muted);
+        else if (!strcmp(key, "selection"))         TSET(selection);
+        else if (!strcmp(key, "light_foreground"))  TSET(light_fg);
+        else if (!strcmp(key, "bright_foreground")) TSET(bright_fg);
+        else if (!strcmp(key, "red"))               TSET(red);
+        else if (!strcmp(key, "green"))             TSET(green);
+        else if (!strcmp(key, "yellow"))            TSET(yellow);
+        else if (!strcmp(key, "orange"))            TSET(orange);
+        else if (!strcmp(key, "cyan"))              TSET(cyan);
+        else if (!strcmp(key, "blue"))              TSET(blue);
+        else if (!strcmp(key, "magenta"))           TSET(magenta);
+        else if (!strcmp(key, "mode"))
+            t->light = (g_ascii_strcasecmp(val, "light") == 0);
+    }
+#undef TSET
+    t->ok = (t->background != NULL && t->foreground != NULL);
+}
+
+static gboolean hex_rgb(const gchar *s, gint *r, gint *g, gint *b) {
+    if (!s) return FALSE;
+    if (*s == '#') s++;
+    if (strlen(s) < 6) return FALSE;
+    gint rr, gg, bb;
+    if (sscanf(s, "%2x%2x%2x", &rr, &gg, &bb) != 3) return FALSE;
+    *r = rr; *g = gg; *b = bb;
+    return TRUE;
+}
+
+/* "#rrggbb" + alpha -> "rgba(r, g, b, a)"; whole-string fallback on failure. */
+static gchar *hex_rgba(const gchar *hex, gdouble alpha) {
+    gint r, g, b;
+    if (!hex_rgb(hex, &r, &g, &b)) return g_strdup("rgba(0,0,0,0)");
+    return g_strdup_printf("rgba(%d, %d, %d, %.2f)", r, g, b, alpha);
+}
+
+/* Linear blend of two hex colours (t = 0 keeps `a`). */
+static gchar *mix_hex(const gchar *a, const gchar *b, gdouble t) {
+    gint ar, ag, ab, br, bg, bb;
+    if (!hex_rgb(a, &ar, &ag, &ab) || !hex_rgb(b, &br, &bg, &bb))
+        return g_strdup(a ? a : "#000000");
+    return g_strdup_printf("#%02x%02x%02x",
+                           (gint)(ar + (br - ar) * t),
+                           (gint)(ag + (bg - ag) * t),
+                           (gint)(ab + (bb - ab) * t));
+}
+
+/* Build a stylesheet from the parsed palette, mirroring BUILTIN_CSS. */
+static gchar *css_from_theme(const Theme *t) {
+    const gchar *fg     = t->foreground ? t->foreground : "#cbd6ea";
+    const gchar *bg     = t->background ? t->background : "#040814";
+    const gchar *accent = t->accent ? t->accent
+                          : (t->blue ? t->blue : "#5b8cff");
+    const gchar *muted  = t->muted ? t->muted : "#8ba0c8";
+    const gchar *bright = t->bright_fg ? t->bright_fg : fg;
+    const gchar *red    = t->red ? t->red : "#ff5c66";
+    const gchar *green  = t->green ? t->green : "#63cf7d";
+    const gchar *yellow = t->yellow ? t->yellow
+                                    : (t->orange ? t->orange : "#f2b455");
+    g_autofree gchar *med       = mix_hex(fg, bg, 0.45);
+    g_autofree gchar *win_bg    = hex_rgba(t->background ? t->background : "#040814", 0.72);
+    g_autofree gchar *head_bg   = hex_rgba(mix_hex(muted, "#000000", 0.55), 0.55);
+    g_autofree gchar *panel_bg  = hex_rgba(mix_hex(bright, "#ffffff", 0.05), 0.52);
+    g_autofree gchar *entry_bg  = hex_rgba(mix_hex(t->background ? t->background : "#040814", "#000000", 0.20), 0.66);
+    g_autofree gchar *border    = hex_rgba(accent, 0.11);
+    g_autofree gchar *border2   = hex_rgba(accent, 0.35);
+    g_autofree gchar *sel_bg    = hex_rgba(accent, 0.24);
+    g_autofree gchar *hover_bg  = hex_rgba(fg, 0.05);
+    g_autofree gchar *hover2    = hex_rgba(fg, 0.08);
+    g_autofree gchar *drop_bg   = hex_rgba(accent, 0.16);
+    g_autofree gchar *badge_hi  = hex_rgba(accent, 0.18);
+    g_autofree gchar *badge_pr  = hex_rgba(yellow, 0.16);
+    g_autofree gchar *badge_do  = hex_rgba(green, 0.16);
+
+    GString *s = g_string_new("* { outline: none; }\n");
+    g_string_append_printf(s,
+        "window, window.background { background-color: %s;\n"
+        "         background-image: none; box-shadow: none; color: %s;\n"
+        "         font-family: \"JetBrainsMono Nerd Font\", \"JetBrainsMono NF\", monospace;\n"
+        "         font-size: 13px; }\n", win_bg, fg);
+    g_string_append_printf(s,
+        "headerbar { background: %s; background-image: none;\n"
+        "            border-bottom: 1px solid %s; color: %s; }\n",
+        head_bg, border, muted);
+    g_string_append_printf(s,
+        ".app-title { font-size: 13px; font-weight: 700; letter-spacing: 4px; color: %s; }\n",
+        bright);
+    g_string_append_printf(s,
+        ".panel { background-color: %s; border: 1px solid %s; border-radius: 16px;\n"
+        "         box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02); }\n",
+        panel_bg, border);
+    g_string_append_printf(s,
+        ".column-title { font-size: 12px; font-weight: 700; letter-spacing: 2.2px; color: %s; }\n",
+        muted);
+    g_string_append_printf(s,
+        ".badge { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; min-width: 20px; }\n"
+        ".badge-todo     { color:%s; background:%s; }\n"
+        ".badge-progress { color:%s; background:%s; }\n"
+        ".badge-done     { color:%s; background:%s; }\n",
+        accent, badge_hi, yellow, badge_pr, green, badge_do);
+    g_string_append_printf(s, ".hint-label { font-size: 12px; color: %s; }\n", muted);
+    g_string_append_printf(s,
+        "scrolledwindow, scrolledwindow > viewport, overlay, listbox, list {\n"
+        "    background: none; box-shadow: none; border: none; }\n"
+        "listbox.row-list { background: none; }\n"
+        "row { background: none; border-radius: 12px; }\n"
+        "row:selected { background-color: %s; border-radius: 12px; }\n"
+        "row:hover:not(:selected) { background-color: %s; border-radius: 12px; }\n",
+        sel_bg, hover_bg);
+    g_string_append_printf(s,
+        ".task-box { border-radius: 11px; transition: background-color 130ms ease; }\n"
+        ".task-box:hover { background-color: %s; }\n"
+        ".task-title { font-size: 14px; color: %s; }\n"
+        ".task-title.prio-high { color: %s; font-weight: 600; }\n"
+        ".task-title.prio-med  { color: %s; }\n"
+        ".task-title.prio-low  { color: %s; }\n"
+        ".task-done .task-title { opacity: 0.40; text-decoration: line-through; }\n"
+        ".due-label { font-size: 11px; color: %s; }\n"
+        ".due-overdue { color: %s; font-weight: 700; }\n",
+        hover2, fg, red, med, green, muted, red);
+    g_string_append_printf(s,
+        "entry { background-color: %s; border-color: %s; color: %s; border-radius: 10px; }\n"
+        "entry:focus { border-color: %s; }\n"
+        ".add-entry { border: 1px dashed %s; background: %s; }\n"
+        ".drop-target { background-color: %s; border-radius: 12px; }\n"
+        ".pop-label { font-size: 12px; color: %s; }\n",
+        entry_bg, border2, fg, accent, border2, hover_bg, drop_bg, muted);
+    return g_string_free(s, FALSE);
+}
+
+static GtkCssProvider *g_css_provider = NULL;
+
+/* Install/replace the app stylesheet (one provider, reloaded in place). */
+static void css_apply(const gchar *css) {
+    GdkDisplay *d = gdk_display_get_default();
+    if (!d) return;
+    if (!g_css_provider) {
+        g_css_provider = gtk_css_provider_new();
+        gtk_style_context_add_provider_for_display(
+            d, GTK_STYLE_PROVIDER(g_css_provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+    gtk_css_provider_load_from_string(g_css_provider, css);
+}
+
+/* Ask GTK for the matching variant so built-in controls sit well inside it. */
+static void prefer_dark(gboolean want) {
+    GtkSettings *st = gtk_settings_get_default();
+    if (!st) return;
+    GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(st),
+        "gtk-application-prefer-dark-theme");
+    if (pspec) g_object_set(st, "gtk-application-prefer-dark-theme", want, NULL);
+}
+
+/* The live Omarchy palette when enabled + parsed, else the built-in one. */
+static void theme_apply(App *a) {
+    gboolean themed = a->follow_theme && a->theme.ok;
+    if (themed) {
+        g_autofree gchar *css = css_from_theme(&a->theme);
+        css_apply(css);
+    } else {
+        css_apply(BUILTIN_CSS);
+    }
+    prefer_dark(!(themed && a->theme.light));
+}
+
+static void theme_reload(App *a) {
+    theme_parse(&a->theme, a->theme_path);
+    theme_apply(a);
+}
+
+static gboolean on_theme_changed(GFileMonitor *m, GFile *f, GFile *o,
+                                 GFileMonitorEvent ev, gpointer ud) {
+    (void)m; (void)f; (void)o; (void)ev;
+    theme_reload(ud);
+    return TRUE;
+}
+
+/* Watch the file and its folder: Omarchy rewrites colors.toml in place on a
+   theme change, but a fresh copy can also replace the whole file. */
+static void theme_watch(App *a) {
+    if (!a->theme_path) return;
+    GFile *file = g_file_new_for_path(a->theme_path);
+    a->theme_mon = g_file_monitor_file(file, G_FILE_MONITOR_NONE, NULL, NULL);
+    if (a->theme_mon)
+        g_signal_connect(a->theme_mon, "changed",
+                         G_CALLBACK(on_theme_changed), a);
+    g_object_unref(file);
+    g_autofree gchar *dir = g_path_get_dirname(a->theme_path);
+    GFile *dfile = g_file_new_for_path(dir);
+    a->theme_dir_mon = g_file_monitor_directory(dfile, G_FILE_MONITOR_NONE,
+                                                NULL, NULL);
+    if (a->theme_dir_mon)
+        g_signal_connect(a->theme_dir_mon, "changed",
+                         G_CALLBACK(on_theme_changed), a);
+    g_object_unref(dfile);
+}
+
+/* ---- undo (Delete / Clear done) ---------------------------------------- */
+
+static void undo_state_free(gpointer p) {
+    UndoState *u = p;
+    if (!u) return;
+    g_free(u->json);
+    g_free(u->label);
+    g_free(u);
+}
+
+static void undo_update_button(App *a) {
+    if (!a->undo_btn) return;
+    gboolean has = a->undo && a->undo->len > 0;
+    gtk_widget_set_visible(a->undo_btn, has);
+    if (has) {
+        UndoState *u = g_ptr_array_index(a->undo, a->undo->len - 1);
+        g_autofree gchar *tip = g_strdup_printf("Undo: %s (Ctrl+Z)", u->label);
+        gtk_widget_set_tooltip_text(a->undo_btn, tip);
+    }
+}
+
+/* Snapshot the store *before* a destructive change. Capped so a long session
+   can't grow without bound. */
+static void undo_push(App *a, const gchar *label) {
+    if (!a->undo) a->undo = g_ptr_array_new_with_free_func(undo_state_free);
+    UndoState *u = g_new0(UndoState, 1);
+    json_t *root = store_to_json(a);
+    u->json = json_dumps(root, JSON_COMPACT);
+    json_decref(root);
+    u->label = g_strdup(label);
+    g_ptr_array_add(a->undo, u);
+    while (a->undo->len > 30)
+        g_ptr_array_remove_index(a->undo, 0);
+    undo_update_button(a);
+}
+
+static void undo_clear(App *a) {
+    if (!a->undo) return;
+    g_ptr_array_set_size(a->undo, 0);
+    undo_update_button(a);
+}
+
+/* Restore the most recent snapshot. The live task array is swapped out and
+   only freed after rebuild_all() has cleared the rows that pointed at it. */
+static gboolean undo_perform(App *a) {
+    if (!a->undo || a->undo->len == 0) return FALSE;
+    UndoState *u = g_ptr_array_steal_index(a->undo, a->undo->len - 1);
+    json_error_t err;
+    json_t *root = json_loads(u->json, 0, &err);
+    if (!root) {
+        undo_state_free(u);
+        undo_update_button(a);
+        return FALSE;
+    }
+    close_all_popovers(a);
+    GArray *old = a->store.tasks;
+    a->store.tasks = g_array_new(FALSE, FALSE, sizeof(Task *));
+    store_append_json(a, root);
+    json_decref(root);
+    rebuild_all(a);
+    for (guint i = 0; i < old->len; i++)
+        task_free(g_array_index(old, Task *, i));
+    g_array_free(old, TRUE);
+    save_store(a);
+    undo_state_free(u);
+    undo_update_button(a);
+    return TRUE;
+}
+
+/* ---- due-date notifications -------------------------------------------- */
+
+/* Every not-done task due today or earlier. */
+static void due_tasks(App *a, GPtrArray *out) {
+    g_autofree gchar *today = today_iso();
+    for (guint i = 0; i < a->store.tasks->len; i++) {
+        Task *t = g_array_index(a->store.tasks, Task *, i);
+        if (t->status == S_DONE || !t->due) continue;
+        if (g_strcmp0(t->due, today) <= 0) g_ptr_array_add(out, t);
+    }
+}
+
+/* Human summary: up to three titles, then "and N more". Sets *count. */
+static gchar *due_body(App *a, gint *count) {
+    GPtrArray *due = g_ptr_array_new();
+    due_tasks(a, due);
+    gint n = (gint)due->len;
+    if (count) *count = n;
+    GString *s = g_string_new(NULL);
+    for (gint i = 0; i < n && i < 3; i++) {
+        Task *t = g_ptr_array_index(due, i);
+        if (i) g_string_append(s, ", ");
+        g_string_append(s, t->title);
+    }
+    if (n > 3) g_string_append_printf(s, " and %d more", n - 3);
+    g_ptr_array_free(due, TRUE);
+    return g_string_free(s, FALSE);
+}
+
+/* At most one summary notification per calendar day. Returns TRUE only when a
+   notification was actually sent (the selftest suppresses sending). */
+static gboolean notify_due(App *a) {
+    if (!a->notify_due) return FALSE;
+    g_autofree gchar *today = today_iso();
+    if (g_strcmp0(a->last_due_notify, today) == 0) return FALSE;
+    g_free(a->last_due_notify);
+    a->last_due_notify = g_strdup(today);
+    gint n = 0;
+    g_autofree gchar *body = due_body(a, &n);
+    if (n == 0 || a->selftest) return FALSE;
+    GNotification *note =
+        g_notification_new(n == 1 ? "Task due" : "Tasks due");
+    g_notification_set_body(note, body);
+    g_application_send_notification(G_APPLICATION(a->gapp), "due", note);
+    g_object_unref(note);
+    return TRUE;
+}
+
+static gboolean notify_due_timer(gpointer ud) {
+    notify_due(ud);
+    return G_SOURCE_CONTINUE;
+}
 
 static const char *query(App *a) {
     return (a->search_active && a->search) ? gtk_editable_get_text(
@@ -1316,6 +1730,10 @@ static void on_col_released(GtkGestureClick *g, gint np, gdouble x, gdouble y,
 
 static void delete_task(App *a, Task *t) {
     close_all_popovers(a);
+    {
+        g_autofree gchar *label = g_strdup_printf("Delete \"%s\"", t->title);
+        undo_push(a, label);
+    }
     GtkWidget *row = t->row;
     GtkWidget *lb_widget = row ? gtk_widget_get_parent(row) : NULL;
     if (row && lb_widget) gtk_list_box_remove(GTK_LIST_BOX(lb_widget), row);
@@ -1326,7 +1744,9 @@ static void delete_task(App *a, Task *t) {
 }
 
 static void clear_done(App *a) {
+    if (count_status(a, S_DONE) == 0) return;
     close_all_popovers(a);
+    undo_push(a, "Clear completed");
     gint i = (gint)a->store.tasks->len - 1;
     while (i >= 0) {
         Task *t = g_array_index(a->store.tasks, Task *, (guint)i);
@@ -1358,8 +1778,8 @@ static void on_clear_answered(GObject *obj, GAsyncResult *res, gpointer ud) {
 static void confirm_clear(App *a) {
     if (!count_status(a, S_DONE)) return;
     GtkAlertDialog *d = gtk_alert_dialog_new(
-        "Clear completed tasks? This removes everything in the Done column "
-        "and cannot be undone.");
+        "Clear completed tasks? This removes everything in the Done column. "
+        "Press Ctrl+Z (or the Undo button) to bring them back.");
     const char *buttons[] = { "Cancel", "Clear", NULL };
     gtk_alert_dialog_set_buttons(d, buttons);
     gtk_alert_dialog_choose(d, GTK_WINDOW(a->win), NULL, on_clear_answered, a);
@@ -1487,6 +1907,10 @@ static gboolean on_window_key(GtkEventControllerKey *c, guint k, guint kc,
             gtk_window_unfullscreen(GTK_WINDOW(a->win));
         else
             gtk_window_fullscreen(GTK_WINDOW(a->win));
+        return TRUE;
+    }
+    if ((st & GDK_CONTROL_MASK) && k == GDK_KEY_z) {
+        undo_perform(a);
         return TRUE;
     }
     if ((st & GDK_CONTROL_MASK) && k == GDK_KEY_n) {
@@ -1628,9 +2052,13 @@ static Column *build_column(App *a, gint status) {
     return col;
 }
 
+static void on_undo_clicked(GtkButton *b, gpointer ud) {
+    (void)b;
+    undo_perform(ud);
+}
+
 static void build_window(App *a) {
-    prefer_dark();
-    apply_css();
+    theme_apply(a);
     GtkWidget *win = gtk_application_window_new(a->gapp);
     a->win = win;
     gtk_window_set_title(GTK_WINDOW(win), "tasks");
@@ -1644,6 +2072,13 @@ static void build_window(App *a) {
     GtkWidget *appname = gtk_label_new("TASKS");
     gtk_widget_add_css_class(appname, "app-title");
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(hb), appname);
+    GtkWidget *undo = gtk_button_new_with_label("Undo");
+    a->undo_btn = undo;
+    gtk_widget_add_css_class(undo, "undo-btn");
+    gtk_widget_set_visible(undo, FALSE);
+    gtk_widget_set_tooltip_text(undo, "Undo (Ctrl+Z)");
+    g_signal_connect(undo, "clicked", G_CALLBACK(on_undo_clicked), a);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), undo);
     gtk_window_set_titlebar(GTK_WINDOW(win), hb);
 
     GtkWidget *search = gtk_search_entry_new();
@@ -2352,6 +2787,196 @@ static void selftest_run(App *a) {
         }
     }
 
+    /* 23. config.ini parsing: defaults, [general], bare keys */
+    {
+        gboolean saved_follow = a->follow_theme, saved_notify = a->notify_due;
+        g_autofree gchar *cdir = g_dir_make_tmp("tasks-cfg-XXXXXX", NULL);
+        g_autofree gchar *cp = g_build_filename(cdir, "config.ini", NULL);
+        g_autofree gchar *cnone = g_build_filename(cdir, "absent.ini", NULL);
+        config_load(a, cnone);
+        CHECK(a->follow_theme && a->notify_due,
+              "config: defaults when file absent");
+        g_file_set_contents(cp,
+            "[general]\nfollow_theme = false\nnotify_due = false\n", -1, NULL);
+        config_load(a, cp);
+        CHECK(!a->follow_theme && !a->notify_due,
+              "config: [general] booleans read");
+        g_file_set_contents(cp, "follow_theme = true\nnotify_due = false\n",
+                            -1, NULL);
+        config_load(a, cp);
+        CHECK(a->follow_theme && !a->notify_due,
+              "config: section-less file still works");
+        a->follow_theme = saved_follow;
+        a->notify_due = saved_notify;
+        g_remove(cp);
+        g_remove(cnone);
+        g_rmdir(cdir);
+    }
+
+    /* 24. Omarchy colors.toml parsing + generated stylesheet */
+    {
+        g_autofree gchar *tdir = g_dir_make_tmp("tasks-theme-XXXXXX", NULL);
+        g_autofree gchar *tp = g_build_filename(tdir, "colors.toml", NULL);
+        g_autofree gchar *tmiss = g_build_filename(tdir, "missing.toml", NULL);
+        const gchar *tomo =
+            "mode = \"dark\"\n"
+            "background = \"#101418\"\n"
+            "foreground = \"#e6e6e6\"\n"
+            "accent = \"#7aa2f7\"\n"
+            "muted = \"#565f89\"\n"
+            "red = \"#f7768e\"\n"
+            "green = \"#9ece6a\"\n"
+            "yellow = \"#e0af68\"\n";
+        g_file_set_contents(tp, tomo, -1, NULL);
+        Theme th;
+        memset(&th, 0, sizeof th);
+        theme_parse(&th, tp);
+        CHECK(th.ok, "theme: colors.toml parsed");
+        CHECK(g_strcmp0(th.background, "#101418") == 0, "theme: background");
+        CHECK(g_strcmp0(th.foreground, "#e6e6e6") == 0, "theme: foreground");
+        CHECK(g_strcmp0(th.accent, "#7aa2f7") == 0, "theme: accent");
+        CHECK(g_strcmp0(th.red, "#f7768e") == 0, "theme: red");
+        CHECK(!th.light, "theme: dark mode detected");
+        g_autofree gchar *tcss = css_from_theme(&th);
+        CHECK(strstr(tcss, "#e6e6e6") != NULL, "theme CSS: uses foreground");
+        CHECK(strstr(tcss, "rgba(16, 20, 24, 0.72)") != NULL,
+              "theme CSS: translucent window background");
+        CHECK(strstr(tcss, "#7aa2f7") != NULL, "theme CSS: accent colour");
+        CHECK(strstr(tcss, "#f7768e") != NULL,
+              "theme CSS: high-priority red");
+
+        /* apply the fixture palette for real, then put the live app theme back */
+#if GTK_CHECK_VERSION(4, 12, 0)
+        gboolean saved_follow = a->follow_theme;
+        Theme saved_theme = a->theme;
+        a->theme = th;                /* steal the parsed fixture */
+        a->follow_theme = TRUE;
+        theme_apply(a);
+        gchar *applied =
+            g_css_provider ? gtk_css_provider_to_string(g_css_provider) : NULL;
+        CHECK(applied && strstr(applied, "rgb(230,230,230)") != NULL,
+              "theme: palette installed into the live stylesheet");
+        g_free(applied);
+        th = a->theme;               /* give it back so we can free it */
+        theme_clear(&th);
+        a->theme = saved_theme;
+        a->follow_theme = saved_follow;
+        theme_apply(a);              /* restore the real stylesheet */
+#else
+        theme_clear(&th);
+#endif
+
+        theme_parse(&th, tmiss);
+        CHECK(!th.ok, "theme: missing file falls back to built-in");
+        theme_clear(&th);
+        g_remove(tp);
+        g_remove(tmiss);
+        g_rmdir(tdir);
+    }
+
+    /* 25. undo: Delete and Clear done restore the store */
+    {
+        undo_clear(a);
+        Column *tu = a->col[S_TODO];
+        create_add_row(tu, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tu->add_entry), "undo-delete me");
+        commit_add(tu, FALSE);
+        Task *ut = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "undo-delete me") == 0) ut = x;
+        }
+        CHECK(ut != NULL, "undo: delete target created");
+        gint64 uid = ut ? ut->id : 0;
+        guint before = a->store.tasks->len;
+        delete_task(a, ut);
+        CHECK(a->store.tasks->len == before - 1, "undo: delete removed task");
+        CHECK(gtk_widget_get_visible(a->undo_btn),
+              "undo: button appears after delete");
+        CHECK(undo_perform(a), "undo: delete restored");
+        CHECK(a->store.tasks->len == before, "undo: task count restored");
+        Task *uback = find_task(&a->store, uid);
+        CHECK(uback != NULL && g_strcmp0(uback->title, "undo-delete me") == 0,
+              "undo: deleted task is back");
+        CHECK(!gtk_widget_get_visible(a->undo_btn),
+              "undo: button hides when stack empty");
+        CHECK(!undo_perform(a), "undo: no-op on empty stack");
+        if (uback) delete_task(a, uback);
+
+        undo_clear(a);
+        create_add_row(a->col[S_DONE], 0);
+        gtk_editable_set_text(GTK_EDITABLE(a->col[S_DONE]->add_entry),
+                              "undo-clear me");
+        commit_add(a->col[S_DONE], FALSE);
+        Task *ct = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "undo-clear me") == 0) ct = x;
+        }
+        CHECK(ct != NULL && ct->status == S_DONE, "undo: done task created");
+        gint64 cid = ct ? ct->id : 0;
+        gint dones_before = count_status(a, S_DONE);
+        clear_done(a);
+        CHECK(count_status(a, S_DONE) == 0, "undo: clear-done emptied column");
+        CHECK(undo_perform(a), "undo: clear-done restored");
+        CHECK(count_status(a, S_DONE) == dones_before,
+              "undo: done column restored");
+        Task *cback = find_task(&a->store, cid);
+        CHECK(cback != NULL && cback->status == S_DONE,
+              "undo: cleared task is back");
+        if (cback) delete_task(a, cback);
+        undo_clear(a);
+    }
+
+    /* 26. due notifications: selection, body, once-a-day suppression */
+    {
+        undo_clear(a);
+        for (gint c = 0; c < 3; c++) clear_column_rows(a->col[c]);
+        for (guint i = 0; i < a->store.tasks->len; i++)
+            task_free(g_array_index(a->store.tasks, Task *, i));
+        g_array_set_size(a->store.tasks, 0);
+
+        g_autofree gchar *today = today_iso();
+        Task *d1 = task_new(a, "zeta overdue", P_MED, "2000-01-01", S_TODO);
+        Task *d2 = task_new(a, "alpha today", P_MED, today, S_TODO);
+        Task *d3 = task_new(a, "omega future", P_MED, "2999-12-31", S_TODO);
+        Task *d4 = task_new(a, "done overdue", P_MED, "2000-01-01", S_DONE);
+        g_array_append_val(a->store.tasks, d1);
+        g_array_append_val(a->store.tasks, d2);
+        g_array_append_val(a->store.tasks, d3);
+        g_array_append_val(a->store.tasks, d4);
+        rebuild_all(a);
+
+        GPtrArray *due = g_ptr_array_new();
+        due_tasks(a, due);
+        CHECK(due->len == 2, "due: only open tasks due today/overdue");
+        g_ptr_array_free(due, TRUE);
+
+        gint dn = 0;
+        g_autofree gchar *dbody = due_body(a, &dn);
+        CHECK(dn == 2, "due: summary count is 2");
+        CHECK(strstr(dbody, "zeta overdue") && strstr(dbody, "alpha today") &&
+                  !strstr(dbody, "omega future") &&
+                  !strstr(dbody, "done overdue"),
+              "due: body lists the open overdue/due-today tasks");
+
+        g_free(a->last_due_notify);
+        a->last_due_notify = NULL;
+        gboolean saved_notify = a->notify_due;
+        a->notify_due = TRUE;
+        CHECK(!notify_due(a), "due: notification suppressed in selftest");
+        CHECK(g_strcmp0(a->last_due_notify, today) == 0,
+              "due: remembers the day it notified");
+        a->notify_due = saved_notify;
+
+        for (gint c = 0; c < 3; c++) clear_column_rows(a->col[c]);
+        for (guint i = 0; i < a->store.tasks->len; i++)
+            task_free(g_array_index(a->store.tasks, Task *, i));
+        g_array_set_size(a->store.tasks, 0);
+        rebuild_all(a);
+        undo_clear(a);
+    }
+
     g_print("--- %s (%d failures) ---\n",
             a->selftest_fail ? "FAILURES" : "selftest OK", a->selftest_fail);
 #undef CHECK
@@ -2479,20 +3104,33 @@ static void on_activate(GApplication *gapp, gpointer ud) {
         gtk_window_present(GTK_WINDOW(a->win));
         return;
     }
+    if (getenv("TASKS_SELFTEST") || getenv("TASKS_SELFTEST_LOAD"))
+        a->selftest = TRUE;
+    a->config_path = g_build_filename(g_get_user_config_dir(),
+                                      "omarchy-tasks", "config.ini", NULL);
+    config_load(a, a->config_path);
+    a->theme_path = g_build_filename(g_get_user_state_dir(), "omarchy",
+                                     "current", "theme", "colors.toml", NULL);
+    theme_parse(&a->theme, a->theme_path);
     a->data_path = g_build_filename(g_get_user_data_dir(), "tasks",
                                     "tasks.json", NULL);
     a->store.tasks = g_array_new(FALSE, FALSE, sizeof(Task *));
     load_store(a);
     a->popovers = g_ptr_array_new();
+    a->undo = g_ptr_array_new_with_free_func(undo_state_free);
     build_window(a);
     rebuild_all(a);
+    theme_watch(a);
     gtk_window_present(GTK_WINDOW(a->win));
-    if (getenv("TASKS_SELFTEST")) {
-        a->selftest = TRUE;
-        g_timeout_add(250, selftest_timer, a);
-    } else if (getenv("TASKS_SELFTEST_LOAD")) {
-        a->selftest = TRUE;
-        g_timeout_add(250, selftest_load_timer, a);
+    if (a->notify_due) {
+        notify_due(a);
+        g_timeout_add_seconds(900, notify_due_timer, a); /* re-check 15m */
+    }
+    if (a->selftest) {
+        if (getenv("TASKS_SELFTEST_LOAD"))
+            g_timeout_add(250, selftest_load_timer, a);
+        else
+            g_timeout_add(250, selftest_timer, a);
     }
 #ifdef TASKS_GEOM
     g_timeout_add(500, debug_geom_timer, a);
@@ -2516,7 +3154,14 @@ int main(int argc, char **argv) {
     g_object_unref(a.gapp);
     store_free(&a.store);
     if (a.popovers) g_ptr_array_free(a.popovers, TRUE);
+    if (a.undo) g_ptr_array_free(a.undo, TRUE);
+    if (a.theme_mon) g_object_unref(a.theme_mon);
+    if (a.theme_dir_mon) g_object_unref(a.theme_dir_mon);
+    theme_clear(&a.theme);
     g_free(a.data_path);
+    g_free(a.config_path);
+    g_free(a.theme_path);
+    g_free(a.last_due_notify);
     if (a.selftest) return a.selftest_fail > 0 ? 1 : 0;
     return status;
 }

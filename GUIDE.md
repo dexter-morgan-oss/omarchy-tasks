@@ -81,6 +81,9 @@ The add box understands a shortcut syntax:
   - **Delete** — remove the task
 - Click the coloured **dot** on a row to cycle its priority.
 
+Deleted something by mistake? Press `Ctrl + Z` (or click **Undo** in the
+header) to bring back the last **Delete** or **Clear Completed**.
+
 ### Keys
 
 | Key | Action |
@@ -88,6 +91,7 @@ The add box understands a shortcut syntax:
 | `Ctrl + N` | open the add box at the top of To Do |
 | `Ctrl + F` | search across all columns |
 | `Ctrl + Shift + D` | clear completed (also: right-click the Done header) |
+| `Ctrl + Z` | undo the last Delete / Clear Completed |
 | `Ctrl + D`, `Delete` | delete the selected task |
 | `Enter` / `Space` | toggle the selected row (moves it to/from Done) |
 | `Esc` | cancel the add box / close search |
@@ -118,6 +122,12 @@ A vim-style terminal TUI is still bundled: run `tasks` with no arguments
 ## 5. Notes
 
 - Storage: `~/.local/share/tasks/tasks.json` (no database, no daemon).
+- **Theme**: the window follows the active Omarchy theme (colours read from
+  `~/.local/state/omarchy/current/theme/colors.toml`) and recolours live when
+  you switch themes. Toggle with `follow_theme` in
+  `~/.config/omarchy-tasks/config.ini`.
+- **Due reminders**: a desktop notification lists overdue / due-today tasks,
+  once a day. Toggle with `notify_due` in the same config file.
 - The GUI is single-instance: pressing `Super + Shift + T` while it is open
   focuses the existing window.
 - App class: `org.omarchy.tasks` (used for keybind focus matching).

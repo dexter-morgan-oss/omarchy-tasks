@@ -18,9 +18,12 @@ JSON store.
 - **Click empty column space** to drop an add box right there
 - Priority shown by **colour** — the title is tinted (high red · normal gray ·
   low green) with a small dot you can click to cycle
-- **Omarchy-native look**: JetBrainsMono Nerd Font on a deep-blue **translucent**
-  theme, no toolbar buttons, glassy panels
-- Keyboard-driven: `Ctrl+N` add, `Ctrl+F` search, `Ctrl+Shift+D` clear done
+- **Follows your Omarchy theme**: reads the active
+  `~/.local/state/omarchy/current/theme/colors.toml` at runtime and reloads
+  **live** when you switch themes (falls back to a built-in deep-blue palette)
+- **Undo** any Delete / Clear Done with `Ctrl+Z` or the header button
+- **Due-date notifications** for overdue and due-today tasks (once a day)
+- Keyboard-driven: `Ctrl+N` add, `Ctrl+F` search, `Ctrl+Shift+D` clear done, `Ctrl+Z` undo
 - **One JSON file** — no database, no daemon, no server
 
 ## Requirements
@@ -81,6 +84,7 @@ focuses the existing window), or type `tasks` in the launcher.
 | Rename | **double-click** a row, or right-click → Rename |
 | Due date | right-click → Due date (`today` / `tomorrow` / `YYYY-MM-DD` / `off`) |
 | Delete | right-click → Delete, or `Delete` / `Ctrl+D` |
+| Undo | `Ctrl+Z`, or the **Undo** button in the header |
 | Search | `Ctrl+F` |
 | Clear Done | `Ctrl+Shift+D`, or right-click the Done header |
 
@@ -103,6 +107,33 @@ tasks clear-done
 
 Running `tasks` with no arguments opens a vim-style TUI. See
 [GUIDE.md](GUIDE.md) for the full walkthrough.
+
+## Configuration
+
+The GUI reads an optional ini file at
+`~/.config/omarchy-tasks/config.ini` (created on demand — nothing is written
+unless you make the file yourself):
+
+```ini
+[general]
+follow_theme = true    # repaint using the active Omarchy theme (default true)
+notify_due   = true    # desktop notification for due/overdue tasks (default true)
+```
+
+Both keys default to `true`, so the app follows your theme and reminds you about
+due tasks out of the box. The `[general]` header is optional.
+
+**Theming.** When `follow_theme` is on, the app parses the same
+`colors.toml` Omarchy writes for your current theme (background, foreground,
+accent, muted, red/green/yellow, …) and builds its stylesheet from it, keeping
+the window translucent with GTK CSS only — no Hyprland config is touched. A
+`GFileMonitor` watches the file, so switching themes with
+`omarchy theme set …` recolours the window live. If the file is missing or
+unreadable the built-in deep-blue palette is used.
+
+**Due notifications.** At startup, and then every 15 minutes, the app sends a
+single summary notification when any not-done task is due today or overdue —
+at most once per calendar day. Set `notify_due = false` to disable it.
 
 ## Storage
 
@@ -147,8 +178,12 @@ bash tests/run_all.sh
 | `tests/test_interop.py` | the CLI ↔ GUI `tasks.json` contract (field types, statuses, legacy `done`-only stores, due normalisation) |
 | `tests/gui_selftest.sh` | builds `tasks-gui` with `-Wall -Wextra -Werror`, then runs its embedded selftests |
 
-The GUI has two built-in self-test modes (100 checks; handlers are driven
-directly so they run in a plain GTK loop):
+The GUI has two built-in self-test modes (**133 checks**; handlers are driven
+directly so they run in a plain GTK loop). Besides the drag/keyboard/rename/
+context-menu/JSON-contract paths, they cover the config parser, the Omarchy
+`colors.toml` parser and generated CSS (including that a parsed palette is
+installed into the live stylesheet), the Undo stack for Delete / Clear Done,
+and the due-date notification selection, summary body and once-a-day gate:
 
 ```bash
 # behavioural: drives the real handlers against a throwaway empty store
@@ -159,6 +194,9 @@ TASKS_SELFTEST_LOAD=1 XDG_DATA_HOME=<dir-with-tasks.json> ./tasks-gui
 ```
 
 Each prints `PASS`/`FAIL` lines and a summary, and exits non-zero on failure.
+
+CI (`.github/workflows/ci.yml`) builds the GUI with `-Werror` and runs the
+whole suite under Xvfb on every push and pull request.
 
 ## License
 
