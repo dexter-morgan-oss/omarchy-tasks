@@ -6,7 +6,7 @@
 # (including a bare AUR checkout). No reclone needed.
 
 pkgname=tasks-gui
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Minimal 3-column kanban task manager for Omarchy (GTK4 GUI + CLI)"
 arch=('x86_64' 'aarch64')
@@ -16,7 +16,7 @@ depends=('gtk4' 'jansson' 'python')
 makedepends=('gcc' 'pkgconf')
 install="$pkgname.install"
 source=("omarchy-tasks-$pkgver.tar.gz::https://github.com/dexter-morgan-oss/omarchy-tasks/archive/v$pkgver.tar.gz")
-sha256sums=('30d15fe7faf73c659a8d3024bc9c3225b9ba550e64fbadbbd4f8995fbcab5935')
+sha256sums=('a0457ae76a421fbcc5b25584b834af29c4578cf96223da710fa2a4f4488d6d2d')
 
 build() {
   cd "omarchy-tasks-$pkgver"
