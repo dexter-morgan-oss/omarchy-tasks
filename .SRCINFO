@@ -1,0 +1,18 @@
+pkgbase = tasks-gui
+	pkgdesc = Minimal 3-column kanban task manager for Omarchy (GTK4 GUI + CLI)
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/dexter-morgan-oss/omarchy-tasks
+	install = tasks-gui.install
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = gcc
+	makedepends = pkgconf
+	depends = gtk4
+	depends = jansson
+	depends = python
+	source = omarchy-tasks-1.0.0.tar.gz::https://github.com/dexter-morgan-oss/omarchy-tasks/archive/v1.0.0.tar.gz
+	sha256sums = 30d15fe7faf73c659a8d3024bc9c3225b9ba550e64fbadbbd4f8995fbcab5935
+
+pkgname = tasks-gui
