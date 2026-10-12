@@ -120,6 +120,8 @@ struct App {
     /* config.ini */
     gboolean follow_theme;
     gboolean notify_due;
+    gchar *font_family;
+    gint font_size;
     gchar *config_path;
     /* live theme */
     Theme theme;
@@ -353,55 +355,6 @@ static gboolean save_store(App *a) {
     return ok;
 }
 
-/* ---- theme: dark blue/black, minimal ---------------------------------- */
-
-static const char *BUILTIN_CSS =
-    "* { outline: none; }\n"
-    "window, window.background { background-color: rgba(4, 8, 20, 0.72);\n"
-    "         background-image: none; box-shadow: none; color: #cbd6ea;\n"
-    "         font-family: \"JetBrainsMono Nerd Font\", \"JetBrainsMono NF\", monospace;\n"
-    "         font-size: 13px; }\n"
-    "headerbar { background: rgba(7, 12, 30, 0.55); background-image: none;\n"
-    "            border-bottom: 1px solid rgba(120,155,255,0.10);\n"
-    "            color: #95a8cb; }\n"
-    ".app-title { font-size: 13px; font-weight: 700; letter-spacing: 4px;\n"
-    "             color: #adc0e6; }\n"
-    ".panel { background-color: rgba(14, 24, 52, 0.52);\n"
-    "         border: 1px solid rgba(130,165,255,0.11);\n"
-    "         border-radius: 16px;\n"
-    "         box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02); }\n"
-    ".column-title { font-size: 12px; font-weight: 700; letter-spacing: 2.2px;\n"
-    "                color: #8ba0c8; }\n"
-    ".badge { font-size: 11px; font-weight: 700; border-radius: 999px;\n"
-    "         padding: 1px 8px; min-width: 20px; }\n"
-    ".badge-todo     { color:#7aa2ff; background:rgba(90,140,255,0.18); }\n"
-    ".badge-progress { color:#f2b455; background:rgba(240,176,77,0.16); }\n"
-    ".badge-done     { color:#5fd07a; background:rgba(95,208,122,0.16); }\n"
-    ".hint-label { font-size: 12px; color: #5f7093; }\n"
-    "scrolledwindow, scrolledwindow > viewport, overlay, listbox, list {\n"
-    "    background: none; box-shadow: none; border: none; }\n"
-    "listbox.row-list { background: none; }\n"
-    "row { background: none; border-radius: 12px; }\n"
-    "row:selected { background-color: rgba(90,140,255,0.24); border-radius: 12px; }\n"
-    "row:hover:not(:selected) { background-color: rgba(130,170,255,0.05);\n"
-    "                           border-radius: 12px; }\n"
-    ".task-box { border-radius: 11px; transition: background-color 130ms ease; }\n"
-    ".task-box:hover { background-color: rgba(130,170,255,0.08); }\n"
-    ".task-title { font-size: 14px; color: #e9eefb; }\n"
-    ".task-title.prio-high { color: #ff5c66; font-weight: 600; }\n"
-    ".task-title.prio-med  { color: #c2ccdf; }\n"
-    ".task-title.prio-low  { color: #63cf7d; }\n"
-    ".task-done .task-title { opacity: 0.40; text-decoration: line-through; }\n"
-    ".due-label { font-size: 11px; color: #66779a; }\n"
-    ".due-overdue { color: #ff5c66; font-weight: 700; }\n"
-    "entry { background-color: rgba(6,11,26,0.66);\n"
-    "        border-color: rgba(70,100,170,0.35); color: #eaf1ff;\n"
-    "        border-radius: 10px; }\n"
-    "entry:focus { border-color: #5b8cff; }\n"
-    ".add-entry { border: 1px dashed rgba(85,115,195,0.55);\n"
-    "             background: rgba(120,160,255,0.03); }\n"
-    ".drop-target { background-color: rgba(90,140,255,0.16); border-radius: 12px; }\n"
-    ".pop-label { font-size: 12px; color: #93a6c8; }\n";
 
 /* The stylesheet is installed by css_apply()/theme_apply() further down, once
    the config and the active Omarchy palette have been read. */
@@ -473,6 +426,9 @@ static void apply_due(App *a, Task *t, const char *val);
 static void config_load(App *a, const gchar *path) {
     a->follow_theme = TRUE;
     a->notify_due = TRUE;
+    g_free(a->font_family);
+    a->font_family = g_strdup("JetBrainsMono Nerd Font");
+    a->font_size = 13;
     g_autofree gchar *data = NULL;
     gsize len = 0;
     if (!path || !g_file_get_contents(path, &data, &len, NULL)) return;
@@ -487,6 +443,13 @@ static void config_load(App *a, const gchar *path) {
         if (e) g_clear_error(&e); else a->follow_theme = v;
         v = g_key_file_get_boolean(kf, "general", "notify_due", &e);
         if (e) g_clear_error(&e); else a->notify_due = v;
+        gchar *f = g_key_file_get_string(kf, "general", "font", &e);
+        if (e) g_clear_error(&e);
+        else if (f && *f) { g_free(a->font_family); a->font_family = f; f = NULL; }
+        g_free(f);
+        gint sz = g_key_file_get_integer(kf, "general", "font_size", &e);
+        if (e) g_clear_error(&e);
+        else if (sz >= 8 && sz <= 32) a->font_size = sz;
     }
     g_key_file_unref(kf);
 }
@@ -572,17 +535,28 @@ static gchar *mix_hex(const gchar *a, const gchar *b, gdouble t) {
                            (gint)(ab + (bb - ab) * t));
 }
 
-/* Build a stylesheet from the parsed palette, mirroring BUILTIN_CSS. */
-static gchar *css_from_theme(const Theme *t) {
-    const gchar *fg     = t->foreground ? t->foreground : "#cbd6ea";
-    const gchar *bg     = t->background ? t->background : "#040814";
-    const gchar *accent = t->accent ? t->accent
-                          : (t->blue ? t->blue : "#5b8cff");
+/* Build the whole stylesheet. A parsed palette (`t`, t->ok) themes it; a NULL
+   palette falls back to the built-in dark-blue one. `font`/`base` come from
+   config so family and type scale can be tuned without a rebuild. Every element
+   size derives from `base`, keeping the scale coherent (base, +1, -1, -2). */
+static gchar *css_build(const Theme *t, const gchar *font, gint base) {
+    gboolean themed = t && t->ok;
+    const gchar *fg     = themed && t->foreground ? t->foreground : "#cbd6ea";
+    const gchar *bg     = themed && t->background ? t->background : "#040814";
+    const gchar *accent = themed ? (t->accent ? t->accent
+                          : (t->blue ? t->blue : "#5b8cff")) : "#5b8cff";
     const gchar *bright = fg;
-    const gchar *red    = t->red ? t->red : "#ff5c66";
-    const gchar *green  = t->green ? t->green : "#63cf7d";
-    const gchar *yellow = t->yellow ? t->yellow
-                                    : (t->orange ? t->orange : "#f2b455");
+    const gchar *red    = themed && t->red   ? t->red   : "#ff5c66";
+    const gchar *green  = themed && t->green ? t->green : "#63cf7d";
+    const gchar *yellow = themed ? (t->yellow ? t->yellow
+                                    : (t->orange ? t->orange : "#f2b455"))
+                                 : "#f2b455";
+    const gchar *family = font && *font ? font : "JetBrainsMono Nerd Font";
+    if (base < 8) base = 8;
+    if (base > 32) base = 32;
+    gint s_title = base + 1;                  /* task titles            */
+    gint s_small = base > 10 ? base - 1 : base;
+    gint s_tiny  = base > 11 ? base - 2 : base - 1;
     /* Surfaces and muted text blend the theme's own bg toward its fg, so the
        result stays readable for dark AND light themes. Never derive a surface
        from the foreground alone: a white fg (e.g. Vantablack) would otherwise
@@ -607,29 +581,30 @@ static gchar *css_from_theme(const Theme *t) {
     g_string_append_printf(s,
         "window, window.background { background-color: %s;\n"
         "         background-image: none; box-shadow: none; color: %s;\n"
-        "         font-family: \"JetBrainsMono Nerd Font\", \"JetBrainsMono NF\", monospace;\n"
-        "         font-size: 13px; }\n", win_bg, fg);
+        "         font-family: \"%s\", \"JetBrainsMono NF\", monospace;\n"
+        "         font-size: %dpx; }\n", win_bg, fg, family, base);
     g_string_append_printf(s,
         "headerbar { background: %s; background-image: none;\n"
         "            border-bottom: 1px solid %s; color: %s; }\n",
         head_bg, border, muted);
     g_string_append_printf(s,
-        ".app-title { font-size: 13px; font-weight: 700; letter-spacing: 4px; color: %s; }\n",
-        bright);
+        ".app-title { font-size: %dpx; font-weight: 700; letter-spacing: 4px; color: %s; }\n",
+        base, bright);
     g_string_append_printf(s,
         ".panel { background-color: %s; border: 1px solid %s; border-radius: 16px;\n"
         "         box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02); }\n",
         panel_bg, border);
     g_string_append_printf(s,
-        ".column-title { font-size: 12px; font-weight: 700; letter-spacing: 2.2px; color: %s; }\n",
-        muted);
+        ".column-title { font-size: %dpx; font-weight: 700; letter-spacing: 2.2px; color: %s; }\n",
+        s_small, muted);
     g_string_append_printf(s,
-        ".badge { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; min-width: 20px; }\n"
+        ".badge { font-size: %dpx; font-weight: 700; border-radius: 999px; padding: 1px 8px; min-width: 20px; }\n"
         ".badge-todo     { color:%s; background:%s; }\n"
         ".badge-progress { color:%s; background:%s; }\n"
         ".badge-done     { color:%s; background:%s; }\n",
-        accent, badge_hi, yellow, badge_pr, green, badge_do);
-    g_string_append_printf(s, ".hint-label { font-size: 12px; color: %s; }\n", muted);
+        s_tiny, accent, badge_hi, yellow, badge_pr, green, badge_do);
+    g_string_append_printf(s, ".hint-label { font-size: %dpx; color: %s; }\n",
+                           s_small, muted);
     g_string_append_printf(s,
         "scrolledwindow, scrolledwindow > viewport, overlay, listbox, list {\n"
         "    background: none; box-shadow: none; border: none; }\n"
@@ -641,21 +616,21 @@ static gchar *css_from_theme(const Theme *t) {
     g_string_append_printf(s,
         ".task-box { border-radius: 11px; transition: background-color 130ms ease; }\n"
         ".task-box:hover { background-color: %s; }\n"
-        ".task-title { font-size: 14px; color: %s; }\n"
+        ".task-title { font-size: %dpx; color: %s; }\n"
         ".task-title.prio-high { color: %s; font-weight: 600; }\n"
         ".task-title.prio-med  { color: %s; }\n"
         ".task-title.prio-low  { color: %s; }\n"
         ".task-done .task-title { opacity: 0.40; text-decoration: line-through; }\n"
-        ".due-label { font-size: 11px; color: %s; }\n"
+        ".due-label { font-size: %dpx; color: %s; }\n"
         ".due-overdue { color: %s; font-weight: 700; }\n",
-        hover2, fg, red, med, green, muted, red);
+        hover2, s_title, fg, red, med, green, s_tiny, muted, red);
     g_string_append_printf(s,
         "entry { background-color: %s; border-color: %s; color: %s; border-radius: 10px; }\n"
         "entry:focus { border-color: %s; }\n"
         ".add-entry { border: 1px dashed %s; background: %s; }\n"
         ".drop-target { background-color: %s; border-radius: 12px; }\n"
-        ".pop-label { font-size: 12px; color: %s; }\n",
-        entry_bg, border2, fg, accent, border2, hover_bg, drop_bg, muted);
+        ".pop-label { font-size: %dpx; color: %s; }\n",
+        entry_bg, border2, fg, accent, border2, hover_bg, drop_bg, s_small, muted);
     return g_string_free(s, FALSE);
 }
 
@@ -686,12 +661,9 @@ static void prefer_dark(gboolean want) {
 /* The live Omarchy palette when enabled + parsed, else the built-in one. */
 static void theme_apply(App *a) {
     gboolean themed = a->follow_theme && a->theme.ok;
-    if (themed) {
-        g_autofree gchar *css = css_from_theme(&a->theme);
-        css_apply(css);
-    } else {
-        css_apply(BUILTIN_CSS);
-    }
+    g_autofree gchar *css = css_build(themed ? &a->theme : NULL,
+                                      a->font_family, a->font_size);
+    css_apply(css);
     prefer_dark(!(themed && a->theme.light));
 }
 
@@ -1331,6 +1303,29 @@ static void on_row_double_click(GtkGestureClick *g, gint np, gdouble x, gdouble 
     start_rename(a, t);
 }
 
+/* Clicking a card selects it AND moves keyboard focus to its listbox. Without
+   the focus move, an inline add entry keeps focus after a task is added, so
+   the window-level Delete handler treats the key as "typed into a field" and
+   ignores it — the reason Done/other cards felt undeletable from the keyboard.
+   Selecting also clears the other columns so "the selected card" is unambiguous. */
+static void focus_listbox_row(App *a, GtkWidget *row) {
+    if (!row || !GTK_IS_LIST_BOX_ROW(row)) return;
+    GtkWidget *lb = gtk_widget_get_parent(row);
+    if (!GTK_IS_LIST_BOX(lb)) return;
+    for (gint i = 0; i < 3; i++)
+        if (a->col[i]->listbox != lb)
+            gtk_list_box_unselect_all(GTK_LIST_BOX(a->col[i]->listbox));
+    gtk_list_box_select_row(GTK_LIST_BOX(lb), GTK_LIST_BOX_ROW(row));
+    gtk_widget_grab_focus(lb);
+}
+
+static void on_row_press(GtkGestureClick *g, gint np, gdouble x, gdouble y,
+                         gpointer ud) {
+    (void)np; (void)x; (void)y;
+    GtkWidget *box = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+    focus_listbox_row(ud, gtk_widget_get_parent(box));
+}
+
 static GdkContentProvider *on_drag_prepare(GtkDragSource *src, gdouble x,
                                            gdouble y, gpointer ud) {
     (void)src; (void)x; (void)y;
@@ -1403,6 +1398,12 @@ static GtkWidget *build_row(App *a, Task *t) {
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(dc), GDK_BUTTON_PRIMARY);
     g_signal_connect(dc, "released", G_CALLBACK(on_row_double_click), a);
     gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(dc));
+
+    /* primary press selects the card and focuses its column (see on_row_press) */
+    GtkGesture *sel = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(sel), GDK_BUTTON_PRIMARY);
+    g_signal_connect(sel, "pressed", G_CALLBACK(on_row_press), a);
+    gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(sel));
 
     t->row = row;
     refresh_row(a, t);
@@ -1868,6 +1869,22 @@ static void on_search_stop(GtkSearchEntry *e, gpointer ud) {
    outside the listbox (e.g. right after the inline add entry is dismissed,
    which is why Done cards felt undeletable from the keyboard). */
 static gboolean delete_selected_task(App *a) {
+    /* Prefer the column that holds keyboard focus, so the visibly-active card
+       wins even if another column still carries a stale selection. */
+    GtkWidget *fw = gtk_root_get_focus(GTK_ROOT(a->win));
+    if (fw) {
+        for (gint i = 0; i < 3; i++) {
+            GtkWidget *lb = a->col[i]->listbox;
+            if (fw != lb && !gtk_widget_is_ancestor(fw, lb)) continue;
+            GtkWidget *row = GTK_WIDGET(
+                gtk_list_box_get_selected_row(GTK_LIST_BOX(lb)));
+            Task *t = row ? g_object_get_data(G_OBJECT(row), "task") : NULL;
+            if (t) {
+                delete_task(a, t);
+                return TRUE;
+            }
+        }
+    }
     for (gint i = 0; i < 3; i++) {
         GtkWidget *row = GTK_WIDGET(gtk_list_box_get_selected_row(
             GTK_LIST_BOX(a->col[i]->listbox)));
@@ -1994,6 +2011,8 @@ static Column *build_column(App *a, gint status) {
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(listbox), GTK_SELECTION_SINGLE);
     gtk_widget_add_css_class(listbox, "row-list");
     gtk_widget_set_vexpand(listbox, TRUE);
+    /* focusable so clicking a card can take keyboard focus and Delete works */
+    gtk_widget_set_focusable(listbox, TRUE);
 
     GtkWidget *empty = gtk_label_new("click to add");
     gtk_widget_add_css_class(empty, "hint-label");
@@ -2540,6 +2559,41 @@ static void selftest_run(App *a) {
             CHECK(h && a->store.tasks->len == before - 1,
                   "Delete removes selected task");
         }
+
+        /* (d) clicking a card moves focus off the inline add entry and leaves
+           only that card selected, so Delete removes the clicked card rather
+           than a stale selection in another column (the reported bug). */
+        Column *tp = a->col[S_PROG];
+        create_add_row(tl, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tl->add_entry), "focus todo");
+        commit_add(tl, FALSE);
+        create_add_row(tp, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tp->add_entry), "focus prog");
+        commit_add(tp, FALSE);
+        Task *ftodo = NULL, *fprog = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "focus todo") == 0) ftodo = x;
+            if (g_strcmp0(x->title, "focus prog") == 0) fprog = x;
+        }
+        CHECK(ftodo && fprog, "focus-delete targets created");
+        if (ftodo && fprog) {
+            gtk_list_box_select_row(GTK_LIST_BOX(tl->listbox),
+                                    GTK_LIST_BOX_ROW(ftodo->row));
+            focus_listbox_row(a, fprog->row);   /* as if the user clicked it */
+            CHECK(gtk_list_box_get_selected_row(GTK_LIST_BOX(tl->listbox)) == NULL,
+                  "clicking a card clears the other column's selection");
+            guint before = a->store.tasks->len;
+            gboolean h = on_window_key(NULL, GDK_KEY_Delete, 0, 0, a);
+            gboolean kept_todo = FALSE;
+            for (guint i = 0; i < a->store.tasks->len; i++) {
+                Task *x = g_array_index(a->store.tasks, Task *, i);
+                if (g_strcmp0(x->title, "focus todo") == 0) kept_todo = TRUE;
+            }
+            CHECK(h && a->store.tasks->len == before - 1 && kept_todo,
+                  "Delete removes the clicked card, not a stale selection");
+            delete_task(a, ftodo);              /* clean up remaining card */
+        }
     }
 
     /* 15. window keyboard shortcuts */
@@ -2791,6 +2845,22 @@ static void selftest_run(App *a) {
         config_load(a, cp);
         CHECK(a->follow_theme && !a->notify_due,
               "config: section-less file still works");
+        gchar *saved_font = g_strdup(a->font_family);
+        gint saved_size = a->font_size;
+        config_load(a, cp);
+        CHECK(g_strcmp0(a->font_family, "JetBrainsMono Nerd Font") == 0 &&
+              a->font_size == 13, "config: font defaults (Omarchy mono)");
+        g_file_set_contents(cp,
+            "[general]\nfont = Fira Code\nfont_size = 16\n", -1, NULL);
+        config_load(a, cp);
+        CHECK(g_strcmp0(a->font_family, "Fira Code") == 0 && a->font_size == 16,
+              "config: font family and size read");
+        g_file_set_contents(cp, "[general]\nfont_size = 999\n", -1, NULL);
+        config_load(a, cp);
+        CHECK(a->font_size == 13, "config: out-of-range font size ignored");
+        g_free(a->font_family);
+        a->font_family = saved_font;
+        a->font_size = saved_size;
         a->follow_theme = saved_follow;
         a->notify_due = saved_notify;
         g_remove(cp);
@@ -2822,13 +2892,20 @@ static void selftest_run(App *a) {
         CHECK(g_strcmp0(th.accent, "#7aa2f7") == 0, "theme: accent");
         CHECK(g_strcmp0(th.red, "#f7768e") == 0, "theme: red");
         CHECK(!th.light, "theme: dark mode detected");
-        g_autofree gchar *tcss = css_from_theme(&th);
+        g_autofree gchar *tcss = css_build(&th, "JetBrainsMono Nerd Font", 13);
         CHECK(strstr(tcss, "#e6e6e6") != NULL, "theme CSS: uses foreground");
         CHECK(strstr(tcss, "rgba(16, 20, 24, 0.72)") != NULL,
               "theme CSS: translucent window background");
         CHECK(strstr(tcss, "#7aa2f7") != NULL, "theme CSS: accent colour");
         CHECK(strstr(tcss, "#f7768e") != NULL,
               "theme CSS: high-priority red");
+        g_autofree gchar *fcss = css_build(&th, "Fira Code", 20);
+        CHECK(strstr(fcss, "\"Fira Code\"") != NULL,
+              "theme CSS: custom font family applied");
+        CHECK(strstr(fcss, "font-size: 20px") != NULL,
+              "theme CSS: custom base font size applied");
+        CHECK(strstr(fcss, "font-size: 21px") != NULL,
+              "theme CSS: task titles scale with base");
         /* Regression: surfaces must blend bg->fg, never be derived from a
            light foreground, or a white-fg theme (e.g. Vantablack) yields
            white panels and white task text becomes invisible. */
@@ -2839,7 +2916,7 @@ static void selftest_run(App *a) {
         twhite.background = g_strdup("#000000");
         twhite.foreground = g_strdup("#ffffff");
         twhite.ok = TRUE;
-        g_autofree gchar *tcss2 = css_from_theme(&twhite);
+        g_autofree gchar *tcss2 = css_build(&twhite, "JetBrainsMono Nerd Font", 13);
         CHECK(strstr(tcss2, "rgba(17, 17, 17, 0.52)") != NULL,
               "theme CSS: dark panel when foreground is white");
         CHECK(strstr(tcss2, "rgba(255, 255, 255, 0.52)") == NULL,
@@ -3159,6 +3236,7 @@ int main(int argc, char **argv) {
     if (a.theme_mon) g_object_unref(a.theme_mon);
     if (a.theme_dir_mon) g_object_unref(a.theme_dir_mon);
     theme_clear(&a.theme);
+    g_free(a.font_family);
     g_free(a.data_path);
     g_free(a.config_path);
     g_free(a.theme_path);

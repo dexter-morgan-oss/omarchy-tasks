@@ -98,6 +98,11 @@ keyboard does not move tasks between columns.)
 | `Esc` | cancel the add box / close search |
 | `F11` | toggle fullscreen |
 
+**Click a card to select it**, then press `Delete` to remove it. Clicking moves
+focus to that column, so `Delete` always targets the card you clicked — even if
+another column still showed a selection. (Deleting also works from the card's
+right-click menu.)
+
 Completion is **drag-only** — no key moves a task to **Done** (so adding a
 task and pressing `Enter` twice can no longer send it to the Done column).
 
@@ -131,6 +136,9 @@ A vim-style terminal TUI is still bundled: run `tasks` with no arguments
   `~/.local/state/omarchy/current/theme/colors.toml`) and recolours live when
   you switch themes. Toggle with `follow_theme` in
   `~/.config/omarchy-tasks/config.ini`.
+- **Font.** The board uses the Omarchy mono font (JetBrainsMono Nerd Font) at
+  13px by default. Set `font` / `font_size` in the same config file to change
+  the family or scale the whole type ramp — no rebuild needed.
 - **Due reminders**: a desktop notification lists overdue / due-today tasks,
   once a day. Toggle with `notify_due` in the same config file.
 - The GUI is single-instance: pressing `Super + Shift + T` while it is open

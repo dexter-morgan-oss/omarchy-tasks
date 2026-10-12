@@ -118,12 +118,17 @@ unless you make the file yourself):
 
 ```ini
 [general]
-follow_theme = true    # repaint using the active Omarchy theme (default true)
-notify_due   = true    # desktop notification for due/overdue tasks (default true)
+follow_theme = true                     # repaint using the active Omarchy theme (default true)
+notify_due   = true                     # desktop notification for due/overdue tasks (default true)
+font         = JetBrainsMono Nerd Font  # UI font family (default: the Omarchy mono font)
+font_size    = 13                       # base size in px; the whole scale derives from it
 ```
 
-Both keys default to `true`, so the app follows your theme and reminds you about
-due tasks out of the box. The `[general]` header is optional.
+`follow_theme` and `notify_due` default to `true`, so the app follows your theme
+and reminds you about due tasks out of the box. `font`/`font_size` default to the
+Omarchy mono font at 13px; every element size scales from `font_size` (titles
++1px, captions −1px, badges −2px), so bump it once to make the whole board
+larger. The `[general]` header is optional.
 
 **Theming.** When `follow_theme` is on, the app parses the same
 `colors.toml` Omarchy writes for your current theme (background, foreground,
@@ -180,7 +185,7 @@ bash tests/run_all.sh
 | `tests/test_interop.py` | the CLI ↔ GUI `tasks.json` contract (field types, statuses, legacy `done`-only stores, due normalisation) |
 | `tests/gui_selftest.sh` | builds `tasks-gui` with `-Wall -Wextra -Werror`, then runs its embedded selftests |
 
-The GUI has two built-in self-test modes (**136 checks**; handlers are driven
+The GUI has two built-in self-test modes (**145 checks**; handlers are driven
 directly so they run in a plain GTK loop). Besides the drag/keyboard/rename/
 context-menu/JSON-contract paths, they cover the config parser, the Omarchy
 `colors.toml` parser and generated CSS (including that a parsed palette is
