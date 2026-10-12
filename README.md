@@ -21,9 +21,11 @@ JSON store.
 - **Follows your Omarchy theme**: reads the active
   `~/.local/state/omarchy/current/theme/colors.toml` at runtime and reloads
   **live** when you switch themes (falls back to a built-in deep-blue palette)
-- **Undo** any Delete / Clear Done with `Ctrl+Z` or the header button
+- **Undo** any Delete / Clear Done with `Ctrl+Z`
 - **Due-date notifications** for overdue and due-today tasks (once a day)
-- Keyboard-driven: `Ctrl+N` add, `Ctrl+F` search, `Ctrl+Shift+D` clear done, `Ctrl+Z` undo
+- **Drag-only completion** — no key moves a task between columns
+- A **shortcuts strip** along the bottom of the window lists every key binding
+- Keyboard-driven: `Ctrl+N` add, `Ctrl+F` search, `Ctrl+Shift+D` clear done, `Ctrl+Z` undo, `Del` remove
 - **One JSON file** — no database, no daemon, no server
 
 ## Requirements
@@ -83,8 +85,8 @@ focuses the existing window), or type `tasks` in the launcher.
 | Priority | shown by **title colour**; click the **dot** to cycle high → normal → low |
 | Rename | **double-click** a row, or right-click → Rename |
 | Due date | right-click → Due date (`today` / `tomorrow` / `YYYY-MM-DD` / `off`) |
-| Delete | right-click → Delete, or `Delete` / `Ctrl+D` |
-| Undo | `Ctrl+Z`, or the **Undo** button in the header |
+| Delete | right-click → Delete, or `Delete` / `Backspace` / `Ctrl+D` |
+| Undo | `Ctrl+Z` |
 | Search | `Ctrl+F` |
 | Clear Done | `Ctrl+Shift+D`, or right-click the Done header |
 

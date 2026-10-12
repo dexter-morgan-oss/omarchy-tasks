@@ -128,7 +128,6 @@ struct App {
     GFileMonitor *theme_dir_mon;
     /* undo stack (Delete / Clear done) */
     GPtrArray *undo;
-    GtkWidget *undo_btn;
     /* most recent day a due notification was considered */
     gchar *last_due_notify;
 };
@@ -738,17 +737,6 @@ static void undo_state_free(gpointer p) {
     g_free(u);
 }
 
-static void undo_update_button(App *a) {
-    if (!a->undo_btn) return;
-    gboolean has = a->undo && a->undo->len > 0;
-    gtk_widget_set_visible(a->undo_btn, has);
-    if (has) {
-        UndoState *u = g_ptr_array_index(a->undo, a->undo->len - 1);
-        g_autofree gchar *tip = g_strdup_printf("Undo: %s (Ctrl+Z)", u->label);
-        gtk_widget_set_tooltip_text(a->undo_btn, tip);
-    }
-}
-
 /* Snapshot the store *before* a destructive change. Capped so a long session
    can't grow without bound. */
 static void undo_push(App *a, const gchar *label) {
@@ -761,13 +749,11 @@ static void undo_push(App *a, const gchar *label) {
     g_ptr_array_add(a->undo, u);
     while (a->undo->len > 30)
         g_ptr_array_remove_index(a->undo, 0);
-    undo_update_button(a);
 }
 
 static void undo_clear(App *a) {
     if (!a->undo) return;
     g_ptr_array_set_size(a->undo, 0);
-    undo_update_button(a);
 }
 
 /* Restore the most recent snapshot. The live task array is swapped out and
@@ -779,7 +765,6 @@ static gboolean undo_perform(App *a) {
     json_t *root = json_loads(u->json, 0, &err);
     if (!root) {
         undo_state_free(u);
-        undo_update_button(a);
         return FALSE;
     }
     close_all_popovers(a);
@@ -793,7 +778,6 @@ static gboolean undo_perform(App *a) {
     g_array_free(old, TRUE);
     save_store(a);
     undo_state_free(u);
-    undo_update_button(a);
     return TRUE;
 }
 
@@ -1879,25 +1863,20 @@ static void on_search_stop(GtkSearchEntry *e, gpointer ud) {
 
 /* ---- keyboard ------------------------------------------------------------ */
 
-static gboolean on_list_key(GtkEventControllerKey *c, guint k, guint kc,
-                            GdkModifierType st, gpointer ud) {
-    (void)c; (void)kc; (void)st;
-    Column *col = ud;
-    App *a = col->app;
-    GtkWidget *fw = gtk_root_get_focus(GTK_ROOT(a->win));
-    if (GTK_IS_ENTRY(fw)) return FALSE;
-    GtkWidget *row = GTK_WIDGET(gtk_list_box_get_selected_row(
-        GTK_LIST_BOX(col->listbox)));
-    if (!row) return FALSE;
-    Task *t = g_object_get_data(G_OBJECT(row), "task");
-    if (!t) return FALSE;
-    if (k == GDK_KEY_Delete || k == GDK_KEY_BackSpace) {
-        delete_task(a, t);
-        return TRUE;
-    }
-    if (k == GDK_KEY_Return || k == GDK_KEY_KP_Enter || k == GDK_KEY_space) {
-        change_status(a, t, t->status == S_DONE ? S_TODO : S_DONE);
-        return TRUE;
+/* Delete the selected card in whichever column has one. Routed through the
+   window rather than a single listbox so it keeps working when focus sits
+   outside the listbox (e.g. right after the inline add entry is dismissed,
+   which is why Done cards felt undeletable from the keyboard). */
+static gboolean delete_selected_task(App *a) {
+    for (gint i = 0; i < 3; i++) {
+        GtkWidget *row = GTK_WIDGET(gtk_list_box_get_selected_row(
+            GTK_LIST_BOX(a->col[i]->listbox)));
+        if (!row) continue;
+        Task *t = g_object_get_data(G_OBJECT(row), "task");
+        if (t) {
+            delete_task(a, t);
+            return TRUE;
+        }
     }
     return FALSE;
 }
@@ -1931,17 +1910,14 @@ static gboolean on_window_key(GtkEventControllerKey *c, guint k, guint kc,
         return TRUE;
     }
     if ((st & GDK_CONTROL_MASK) && k == GDK_KEY_d) {
-        for (gint i = 0; i < 3; i++) {
-            GtkWidget *row = GTK_WIDGET(gtk_list_box_get_selected_row(
-                GTK_LIST_BOX(a->col[i]->listbox)));
-            if (row) {
-                Task *t = g_object_get_data(G_OBJECT(row), "task");
-                if (t) {
-                    delete_task(a, t);
-                    return TRUE;
-                }
-            }
-        }
+        return delete_selected_task(a);
+    }
+    /* plain Delete/Backspace removes the selected card in any column, unless
+       a text field (add/search/rename) has focus and should get the key */
+    if ((k == GDK_KEY_Delete || k == GDK_KEY_BackSpace) && !(st & GDK_CONTROL_MASK)) {
+        GtkWidget *fw = gtk_root_get_focus(GTK_ROOT(a->win));
+        if (fw && GTK_IS_EDITABLE(fw)) return FALSE;
+        return delete_selected_task(a);
     }
     return FALSE;
 }
@@ -1969,11 +1945,7 @@ static void attach_column_controllers(App *a, Column *col) {
     g_signal_connect(cg, "pressed", G_CALLBACK(on_col_press), col);
     g_signal_connect(cg, "released", G_CALLBACK(on_col_released), col);
     gtk_widget_add_controller(col->scroller, GTK_EVENT_CONTROLLER(cg));
-
-    /* listbox keys (delete / toggle) */
-    GtkEventController *k = gtk_event_controller_key_new();
-    g_signal_connect(k, "key-pressed", G_CALLBACK(on_list_key), col);
-    gtk_widget_add_controller(col->listbox, GTK_EVENT_CONTROLLER(k));
+    /* card keyboard actions (Delete) are handled window-wide in on_window_key */
 }
 
 static Column *build_column(App *a, gint status) {
@@ -2056,11 +2028,6 @@ static Column *build_column(App *a, gint status) {
     return col;
 }
 
-static void on_undo_clicked(GtkButton *b, gpointer ud) {
-    (void)b;
-    undo_perform(ud);
-}
-
 static void build_window(App *a) {
     theme_apply(a);
     GtkWidget *win = gtk_application_window_new(a->gapp);
@@ -2076,13 +2043,6 @@ static void build_window(App *a) {
     GtkWidget *appname = gtk_label_new("TASKS");
     gtk_widget_add_css_class(appname, "app-title");
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(hb), appname);
-    GtkWidget *undo = gtk_button_new_with_label("Undo");
-    a->undo_btn = undo;
-    gtk_widget_add_css_class(undo, "undo-btn");
-    gtk_widget_set_visible(undo, FALSE);
-    gtk_widget_set_tooltip_text(undo, "Undo (Ctrl+Z)");
-    g_signal_connect(undo, "clicked", G_CALLBACK(on_undo_clicked), a);
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), undo);
     gtk_window_set_titlebar(GTK_WINDOW(win), hb);
 
     GtkWidget *search = gtk_search_entry_new();
@@ -2112,6 +2072,22 @@ static void build_window(App *a) {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_append(GTK_BOX(root), search);
     gtk_box_append(GTK_BOX(root), main);
+
+    /* persistent shortcut hints strip */
+    GtkWidget *hints = gtk_label_new(
+        "Shortcuts:  Ctrl+N new  ·  Ctrl+F search  ·  Ctrl+Z undo  ·  "
+        "Ctrl+Shift+D clear done  ·  Del remove selected  ·  "
+        "drag a card to move / complete  ·  "
+        "right-click a card for rename / due / delete  ·  F11 fullscreen");
+    gtk_widget_add_css_class(hints, "hint-label");
+    gtk_widget_add_css_class(hints, "hints");
+    gtk_label_set_xalign(GTK_LABEL(hints), 0.0);
+    gtk_label_set_wrap(GTK_LABEL(hints), TRUE);
+    gtk_widget_set_margin_start(hints, 10);
+    gtk_widget_set_margin_end(hints, 10);
+    gtk_widget_set_margin_bottom(hints, 8);
+    gtk_box_append(GTK_BOX(root), hints);
+
     gtk_window_set_child(GTK_WINDOW(win), root);
 
     GtkEventController *wk = gtk_event_controller_key_new();
@@ -2503,9 +2479,9 @@ static void selftest_run(App *a) {
         }
     }
 
-    /* 14. list keyboard: Return toggles done, Delete removes */
+    /* 14. list keyboard: Delete removes in every column; Return does nothing */
     {
-        /* (a) a fresh To Do card: Return marks it done */
+        /* (a) Return must NOT move a card (completion is drag-only) */
         Column *tl = a->col[S_TODO];
         create_add_row(tl, 0);
         gtk_editable_set_text(GTK_EDITABLE(tl->add_entry), "kbd item");
@@ -2519,11 +2495,12 @@ static void selftest_run(App *a) {
         if (tk) {
             gtk_list_box_select_row(GTK_LIST_BOX(tl->listbox),
                                     GTK_LIST_BOX_ROW(tk->row));
-            gboolean h = on_list_key(NULL, GDK_KEY_Return, 0, 0, tl);
-            CHECK(h && tk->status == S_DONE, "Return marks task done");
+            gboolean h = on_window_key(NULL, GDK_KEY_Return, 0, 0, a);
+            CHECK(!h && tk->status == S_TODO,
+                  "Return does not move a card");
         }
 
-        /* (b) a card created directly in Done: Return reopens it */
+        /* (b) a card created directly in Done: Delete removes it */
         Column *tdn = a->col[S_DONE];
         create_add_row(tdn, 0);
         gtk_editable_set_text(GTK_EDITABLE(tdn->add_entry), "kbd done");
@@ -2537,8 +2514,11 @@ static void selftest_run(App *a) {
         if (tr) {
             gtk_list_box_select_row(GTK_LIST_BOX(tdn->listbox),
                                     GTK_LIST_BOX_ROW(tr->row));
-            gboolean h = on_list_key(NULL, GDK_KEY_Return, 0, 0, tdn);
-            CHECK(h && tr->status == S_TODO, "Return reopens task");
+            gtk_window_set_focus(GTK_WINDOW(a->win), tdn->listbox);
+            guint before = a->store.tasks->len;
+            gboolean h = on_window_key(NULL, GDK_KEY_Delete, 0, 0, a);
+            CHECK(h && a->store.tasks->len == before - 1,
+                  "Delete removes a card in Done");
         }
 
         /* (c) a fresh To Do card: Delete removes it */
@@ -2554,8 +2534,9 @@ static void selftest_run(App *a) {
         if (tkd) {
             gtk_list_box_select_row(GTK_LIST_BOX(tl->listbox),
                                     GTK_LIST_BOX_ROW(tkd->row));
+            gtk_window_set_focus(GTK_WINDOW(a->win), tl->listbox);
             guint before = a->store.tasks->len;
-            gboolean h = on_list_key(NULL, GDK_KEY_Delete, 0, 0, tl);
+            gboolean h = on_window_key(NULL, GDK_KEY_Delete, 0, 0, a);
             CHECK(h && a->store.tasks->len == before - 1,
                   "Delete removes selected task");
         }
@@ -2911,15 +2892,15 @@ static void selftest_run(App *a) {
         guint before = a->store.tasks->len;
         delete_task(a, ut);
         CHECK(a->store.tasks->len == before - 1, "undo: delete removed task");
-        CHECK(gtk_widget_get_visible(a->undo_btn),
-              "undo: button appears after delete");
+        CHECK(a->undo && a->undo->len == 1,
+              "undo: snapshot queued after delete");
         CHECK(undo_perform(a), "undo: delete restored");
         CHECK(a->store.tasks->len == before, "undo: task count restored");
         Task *uback = find_task(&a->store, uid);
         CHECK(uback != NULL && g_strcmp0(uback->title, "undo-delete me") == 0,
               "undo: deleted task is back");
-        CHECK(!gtk_widget_get_visible(a->undo_btn),
-              "undo: button hides when stack empty");
+        CHECK(!a->undo || a->undo->len == 0,
+              "undo: stack empty after restore");
         CHECK(!undo_perform(a), "undo: no-op on empty stack");
         if (uback) delete_task(a, uback);
 

@@ -49,7 +49,8 @@ green (low) — plus a small dot on the right; click the dot to cycle.
 The board uses Omarchy's monospace face (**JetBrainsMono Nerd Font**) on a deep
 blue **translucent** palette — the window and column panels are semi-transparent
 (alpha-composited over the desktop), and the chrome is deliberately empty — no
-toolbar buttons. Search is `Ctrl + F`; clearing the Done column is
+toolbar buttons. A small **shortcuts strip** along the bottom of the window
+lists the keys below. Search is `Ctrl + F`; clearing the Done column is
 `Ctrl + Shift + D` or a **right-click on the Done column header**.
 
 ### Adding
@@ -81,8 +82,9 @@ The add box understands a shortcut syntax:
   - **Delete** — remove the task
 - Click the coloured **dot** on a row to cycle its priority.
 
-Deleted something by mistake? Press `Ctrl + Z` (or click **Undo** in the
-header) to bring back the last **Delete** or **Clear Completed**.
+Deleted something by mistake? Press `Ctrl + Z` to bring back the last
+**Delete** or **Clear Completed**. (Completion itself is drag-only — the
+keyboard does not move tasks between columns.)
 
 ### Keys
 
@@ -92,9 +94,12 @@ header) to bring back the last **Delete** or **Clear Completed**.
 | `Ctrl + F` | search across all columns |
 | `Ctrl + Shift + D` | clear completed (also: right-click the Done header) |
 | `Ctrl + Z` | undo the last Delete / Clear Completed |
-| `Ctrl + D`, `Delete` | delete the selected task |
-| `Enter` / `Space` | toggle the selected row (moves it to/from Done) |
+| `Delete`, `Backspace`, `Ctrl + D` | delete the selected task (any column) |
 | `Esc` | cancel the add box / close search |
+| `F11` | toggle fullscreen |
+
+Completion is **drag-only** — no key moves a task to **Done** (so adding a
+task and pressing `Enter` twice can no longer send it to the Done column).
 
 ---
 
