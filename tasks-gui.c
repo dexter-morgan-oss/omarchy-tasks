@@ -549,7 +549,11 @@ static void due_ctx_notify(gpointer data, GClosure *closure) {
     g_free(data);
 }
 
-static void due_btn_set(DueCtx *c) {
+/* GTK calls signal handlers as (emitting_widget, user_data); the context is
+   the *second* argument, not the first. */
+static void due_btn_set(GtkWidget *w, gpointer ud) {
+    (void)w;
+    DueCtx *c = ud;
     const gchar *text = gtk_editable_get_text(GTK_EDITABLE(c->entry));
     apply_due(c->a, c->t, text ? text : "");
 }
@@ -1886,6 +1890,23 @@ static void selftest_run(App *a) {
         CHECK(selftest_popup_warnings == 0,
               "due popover opens without a grabbing-popup warning");
         CHECK(a->popovers->len == 1, "due popover is the only popup open");
+        /* Exercising the popover's Set callback must neither crash nor lose
+           the date. The callback runs as signal(widget, user_data); getting
+           that signature wrong read the widget as the context and segfaulted
+           on every Set / Enter. */
+        if (a->popovers->len == 1) {
+            GtkWidget *dpop = g_ptr_array_index(a->popovers, 0);
+            GtkWidget *dbox = gtk_popover_get_child(GTK_POPOVER(dpop));
+            GtkWidget *dentry =
+                gtk_widget_get_next_sibling(gtk_widget_get_first_child(dbox));
+            gtk_editable_set_text(GTK_EDITABLE(dentry), "2026-03-03");
+            g_signal_emit_by_name(dentry, "activate");
+            for (gint i = 0; i < 40; i++)
+                while (g_main_context_iteration(NULL, FALSE))
+                    ;
+            CHECK(g_strcmp0(tc->due, "2026-03-03") == 0,
+                  "due committed from popover entry");
+        }
         close_all_popovers(a);
         for (gint i = 0; i < 40; i++)
             while (g_main_context_iteration(NULL, FALSE))
