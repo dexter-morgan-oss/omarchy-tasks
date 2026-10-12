@@ -123,17 +123,42 @@ Or, if installed via `makepkg`: `sudo pacman -Rns tasks-gui`.
 
 ## Development
 
+Build the GUI:
+
 ```bash
 gcc -O2 -Wall -Wextra $(pkg-config --cflags gtk4 jansson) tasks-gui.c \
     -o tasks-gui $(pkg-config --libs gtk4 jansson) -lm
 ```
 
-`tasks-gui.c` ships with a self-test covering add / move / reorder / search /
-rename / due / delete / JSON persistence:
+### Tests
+
+Everything is covered by a single runner (stdlib Python 3 only — no pytest
+needed). The GUI tests need a session with `WAYLAND_DISPLAY` or `DISPLAY`;
+they self-skip when run headless.
 
 ```bash
-TASKS_SELFTEST=1 XDG_DATA_HOME=/tmp/ts-empty ./tasks-gui   # prints PASS/FAIL
+bash tests/run_all.sh
 ```
+
+| Suite | What it covers |
+| --- | --- |
+| `tests/test_taskstore.py` | storage layer: load/save round-trip, atomic writes, normalisation, `parse_due`, ids, sorting |
+| `tests/test_cli.py` | `tasks` end-to-end: add / priority / due / list / done / open / rm / clear-done, exit codes |
+| `tests/test_interop.py` | the CLI ↔ GUI `tasks.json` contract (field types, statuses, legacy `done`-only stores, due normalisation) |
+| `tests/gui_selftest.sh` | builds `tasks-gui` with `-Wall -Wextra -Werror`, then runs its embedded selftests |
+
+The GUI has two built-in self-test modes (100 checks; handlers are driven
+directly so they run in a plain GTK loop):
+
+```bash
+# behavioural: drives the real handlers against a throwaway empty store
+TASKS_SELFTEST=1 XDG_DATA_HOME=$(mktemp -d) ./tasks-gui
+
+# load: asserts the GUI reads a CLI/foreign tasks.json correctly
+TASKS_SELFTEST_LOAD=1 XDG_DATA_HOME=<dir-with-tasks.json> ./tasks-gui
+```
+
+Each prints `PASS`/`FAIL` lines and a summary, and exits non-zero on failure.
 
 ## License
 

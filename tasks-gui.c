@@ -25,7 +25,7 @@
 #include <math.h>
 
 #define APP_ID  "org.omarchy.tasks"
-#define VERSION "3.0.0"
+#define VERSION "1.1.0"   /* keep in sync with tasks.py */
 
 /* ---- model ------------------------------------------------------------ */
 
@@ -138,10 +138,33 @@ static Task *find_task(Store *s, gint64 id) {
     return NULL;
 }
 
+/* Parse a date token into y/m/d. Accepts the extended form "YYYY-MM-DD"
+   and the compact "YYYYMMDD"; the whole token must be consumed, so trailing
+   junk ("2026-02-03x") is rejected. Non-padded fields ("2026-1-5") are
+   accepted and normalised by the caller, matching what the CLI accepts. */
+static gboolean parse_dmy(const char *s, gint *y, gint *m, gint *d) {
+    if (!s || !*s) return FALSE;
+    gint yy, mm, dd, used = 0;
+    if (sscanf(s, "%d-%d-%d%n", &yy, &mm, &dd, &used) == 3 &&
+        used == (gint)strlen(s)) {
+        *y = yy; *m = mm; *d = dd;
+        return TRUE;
+    }
+    if (sscanf(s, "%4d%2d%2d%n", &yy, &mm, &dd, &used) == 3 &&
+        used == (gint)strlen(s)) {
+        *y = yy; *m = mm; *d = dd;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* True for a real calendar date (rejects 2026-02-31, month 13, ...). */
 static gboolean valid_date(const char *s) {
-    gint y, m, d;
-    return s && sscanf(s, "%d-%d-%d", &y, &m, &d) == 3 && y >= 1900 &&
-           m >= 1 && m <= 12 && d >= 1 && d <= 31;
+    if (!s) return FALSE;
+    g_autofree gchar *t = g_strstrip(g_strdup(s));
+    gint y = 0, m = 0, d = 0;
+    return parse_dmy(t, &y, &m, &d) &&
+           g_date_valid_dmy((guint)d, (guint)m, (guint)y);
 }
 
 static gchar *today_iso(void) {
@@ -154,19 +177,33 @@ static gchar *today_iso(void) {
     return g_strdup(buf);
 }
 
+/* Resolve a due token to a normalised "YYYY-MM-DD", or NULL to clear the
+   due date (empty, "off", "none", "-", or anything unrecognised). The
+   keywords are case-insensitive to match the CLI's parse_due(). */
 static gchar *parse_due_token(const char *tok) {
-    if (g_strcmp0(tok, "today") == 0) return today_iso();
-    if (g_strcmp0(tok, "tomorrow") == 0) {
-        time_t t = time(NULL) + 86400;
+    if (!tok) return NULL;
+    g_autofree gchar *t = g_strstrip(g_strdup(tok));
+    gchar *out = NULL;
+    if (g_ascii_strcasecmp(t, "today") == 0) {
+        out = today_iso();
+    } else if (g_ascii_strcasecmp(t, "tomorrow") == 0) {
+        time_t tt = time(NULL) + 86400;
         struct tm tm;
-        localtime_r(&t, &tm);
+        localtime_r(&tt, &tm);
         gchar buf[16];
         g_snprintf(buf, sizeof buf, "%04d-%02d-%02d", tm.tm_year + 1900,
                    tm.tm_mon + 1, tm.tm_mday);
-        return g_strdup(buf);
+        out = g_strdup(buf);
+    } else {
+        gint y = 0, m = 0, d = 0;
+        if (parse_dmy(t, &y, &m, &d) &&
+            g_date_valid_dmy((guint)d, (guint)m, (guint)y)) {
+            gchar buf[16];
+            g_snprintf(buf, sizeof buf, "%04d-%02d-%02d", y, m, d);
+            out = g_strdup(buf);
+        }
     }
-    if (valid_date(tok)) return g_strdup(tok);
-    return NULL;
+    return out;
 }
 
 /* quick line: "!ship v1 tomorrow" / ".low task" */
@@ -734,11 +771,38 @@ static void rename_focus_left(GtkEventControllerFocus *fc, gpointer ud) {
 
 /* ---- row context menu --------------------------------------------------- */
 
+/* Opening the inline editor right as the context menu pops down lets the
+   popdown steal focus from the new entry, which fires its "leave" handler and
+   commits the rename the user never got to type. Close the menu first and open
+   the editor in the next idle, once the menu is really gone (same fix as the
+   context-menu → Due date path). */
+typedef struct {
+    App *a;
+    Task *t;
+    GtkWidget *row; /* weak pointer: NULLed if the row is destroyed first */
+} RenameOpenReq;
+
+static gboolean start_rename_idle(gpointer ud) {
+    RenameOpenReq *r = ud;
+    if (r->row) {
+        start_rename(r->a, r->t);
+        g_object_remove_weak_pointer(G_OBJECT(r->row), (gpointer *)&r->row);
+    }
+    g_free(r);
+    return G_SOURCE_REMOVE;
+}
+
 static void row_menu_rename(GtkButton *b, gpointer ud) {
     (void)b;
     Task *t = ud;
     close_all_popovers(t->app);
-    start_rename(t->app, t);
+    if (!t->row) return;
+    RenameOpenReq *r = g_new0(RenameOpenReq, 1);
+    r->a = t->app;
+    r->t = t;
+    r->row = t->row;
+    g_object_add_weak_pointer(G_OBJECT(t->row), (gpointer *)&r->row);
+    g_idle_add(start_rename_idle, r);
 }
 
 static void row_menu_due(GtkButton *b, gpointer ud) {
@@ -1818,10 +1882,16 @@ static void selftest_run(App *a) {
     create_add_row(tn, 0);
     gtk_editable_set_text(GTK_EDITABLE(tn->add_entry), "dupecheck");
     on_add_activate(GTK_ENTRY(tn->add_entry), tn);
-    for (gint i = 0; i < 60; i++) {
+    /* the commit is deferred to an idle; pump until it lands (or give up) */
+    for (gint i = 0; i < 200; i++) {
         while (g_main_context_iteration(NULL, FALSE))
             ;
-        g_usleep(1500);
+        gint seen = 0;
+        for (guint j = 0; j < a->store.tasks->len; j++)
+            if (g_strcmp0(g_array_index(a->store.tasks, Task *, j)->title,
+                          "dupecheck") == 0) seen++;
+        if (seen > 0) break;
+        g_usleep(1000);
     }
     gint ndup = 0;
     for (guint i = 0; i < a->store.tasks->len; i++)
@@ -1916,6 +1986,372 @@ static void selftest_run(App *a) {
         g_print("SKIP due-popover grab check (window not mapped)\n");
     }
 
+    /* 12. pure parsing: quick-add markers and due tokens */
+    {
+        g_autofree gchar *today = today_iso();
+        CHECK(g_strcmp0(parse_due_token("today"), today) == 0,
+              "parse_due_token today");
+        CHECK(g_strcmp0(parse_due_token("TODAY"), today) == 0,
+              "parse_due_token TODAY (case-insensitive)");
+        g_autofree gchar *tom = parse_due_token("tomorrow");
+        CHECK(tom != NULL && g_strcmp0(tom, today) != 0,
+              "parse_due_token tomorrow");
+        CHECK(parse_due_token("off") == NULL, "parse_due_token off clears");
+        CHECK(parse_due_token("none") == NULL, "parse_due_token none clears");
+        CHECK(parse_due_token("-") == NULL, "parse_due_token dash clears");
+        CHECK(parse_due_token("") == NULL, "parse_due_token empty clears");
+        CHECK(parse_due_token("garbage") == NULL,
+              "parse_due_token garbage rejected");
+        CHECK(parse_due_token("2026-13-01") == NULL,
+              "parse_due_token month 13 rejected");
+        CHECK(parse_due_token("2026-02-31") == NULL,
+              "parse_due_token feb 31 rejected");
+        CHECK(parse_due_token("2026-01-05x") == NULL,
+              "parse_due_token trailing junk rejected");
+        g_autofree gchar *norm = parse_due_token("2026-1-5");
+        CHECK(norm != NULL && g_strcmp0(norm, "2026-01-05") == 0,
+              "parse_due_token normalises YYYY-M-D");
+        CHECK(valid_date("2024-02-29"), "valid_date accepts leap day");
+        CHECK(!valid_date("2026-02-29"), "valid_date rejects non-leap day");
+
+        char *title = NULL; gint pp = -1; char *dd = NULL;
+        parse_quick("!ship v1 tomorrow", &title, &pp, &dd);
+        CHECK(pp == P_HIGH && g_strcmp0(title, "ship v1") == 0 && dd != NULL,
+              "parse_quick: !priority + due token stripped");
+        g_free(title); g_free(dd);
+        title = NULL; pp = -1; dd = NULL;
+        parse_quick(".low task", &title, &pp, &dd);
+        CHECK(pp == P_LOW && g_strcmp0(title, "low task") == 0 && dd == NULL,
+              "parse_quick: .priority marker stripped");
+        g_free(title); g_free(dd);
+        title = NULL; pp = -1; dd = NULL;
+        parse_quick("plain title", &title, &pp, &dd);
+        CHECK(pp == P_MED && g_strcmp0(title, "plain title") == 0 && dd == NULL,
+              "parse_quick: defaults to medium, keeps title");
+        g_free(title); g_free(dd);
+    }
+
+    /* 13. clicking the priority dot cycles high→med→low and repaints */
+    {
+        Column *tc2 = a->col[S_TODO];
+        create_add_row(tc2, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tc2->add_entry), "cycle me");
+        commit_add(tc2, FALSE);
+        Task *tcy = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "cycle me") == 0) tcy = x;
+        }
+        CHECK(tcy != NULL, "cycle task created");
+        if (tcy) {
+            GtkWidget *dot = g_object_get_data(G_OBJECT(tcy->row), "dot");
+            GtkGesture *gg = gtk_gesture_click_new();
+            gtk_widget_add_controller(dot, GTK_EVENT_CONTROLLER(gg));
+            gint before = tcy->prio;
+            on_dot_clicked(GTK_GESTURE_CLICK(gg), 1, 0, 0, a);
+            CHECK(tcy->prio == (before + 1) % 3, "dot click cycles priority");
+            on_dot_clicked(GTK_GESTURE_CLICK(gg), 1, 0, 0, a);
+            CHECK(tcy->prio == (before + 2) % 3, "dot click cycles again");
+            on_dot_clicked(GTK_GESTURE_CLICK(gg), 1, 0, 0, a);
+            CHECK(tcy->prio == before, "dot click wraps around");
+            GtkWidget *tl = g_object_get_data(G_OBJECT(tcy->row), "title");
+            const gchar *cls = tcy->prio == P_HIGH   ? "prio-high"
+                               : tcy->prio == P_LOW  ? "prio-low"
+                                                     : "prio-med";
+            CHECK(gtk_widget_has_css_class(tl, cls),
+                  "title colour follows priority");
+            delete_task(a, tcy);
+        }
+    }
+
+    /* 14. list keyboard: Return toggles done, Delete removes */
+    {
+        /* (a) a fresh To Do card: Return marks it done */
+        Column *tl = a->col[S_TODO];
+        create_add_row(tl, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tl->add_entry), "kbd item");
+        commit_add(tl, FALSE);
+        Task *tk = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "kbd item") == 0) tk = x;
+        }
+        CHECK(tk != NULL, "keyboard task created");
+        if (tk) {
+            gtk_list_box_select_row(GTK_LIST_BOX(tl->listbox),
+                                    GTK_LIST_BOX_ROW(tk->row));
+            gboolean h = on_list_key(NULL, GDK_KEY_Return, 0, 0, tl);
+            CHECK(h && tk->status == S_DONE, "Return marks task done");
+        }
+
+        /* (b) a card created directly in Done: Return reopens it */
+        Column *tdn = a->col[S_DONE];
+        create_add_row(tdn, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tdn->add_entry), "kbd done");
+        commit_add(tdn, FALSE);
+        Task *tr = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "kbd done") == 0) tr = x;
+        }
+        CHECK(tr != NULL && tr->status == S_DONE, "done-column add lands done");
+        if (tr) {
+            gtk_list_box_select_row(GTK_LIST_BOX(tdn->listbox),
+                                    GTK_LIST_BOX_ROW(tr->row));
+            gboolean h = on_list_key(NULL, GDK_KEY_Return, 0, 0, tdn);
+            CHECK(h && tr->status == S_TODO, "Return reopens task");
+        }
+
+        /* (c) a fresh To Do card: Delete removes it */
+        create_add_row(tl, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tl->add_entry), "kbd del");
+        commit_add(tl, FALSE);
+        Task *tkd = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "kbd del") == 0) tkd = x;
+        }
+        CHECK(tkd != NULL, "delete-target task created");
+        if (tkd) {
+            gtk_list_box_select_row(GTK_LIST_BOX(tl->listbox),
+                                    GTK_LIST_BOX_ROW(tkd->row));
+            guint before = a->store.tasks->len;
+            gboolean h = on_list_key(NULL, GDK_KEY_Delete, 0, 0, tl);
+            CHECK(h && a->store.tasks->len == before - 1,
+                  "Delete removes selected task");
+        }
+    }
+
+    /* 15. window keyboard shortcuts */
+    {
+        if (a->col[S_TODO]->add_row) cancel_add_row(a->col[S_TODO]);
+        gboolean h = on_window_key(NULL, GDK_KEY_n, 0, GDK_CONTROL_MASK, a);
+        CHECK(h && a->col[S_TODO]->add_row != NULL, "Ctrl+N opens add row");
+        cancel_add_row(a->col[S_TODO]);
+        h = on_window_key(NULL, GDK_KEY_f, 0, GDK_CONTROL_MASK, a);
+        CHECK(h && a->search_active, "Ctrl+F opens search");
+        h = on_window_key(NULL, GDK_KEY_f, 0, GDK_CONTROL_MASK, a);
+        CHECK(h && !a->search_active, "Ctrl+F closes search");
+
+        Column *tx = a->col[S_TODO];
+        create_add_row(tx, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tx->add_entry), "ctl-d item");
+        commit_add(tx, FALSE);
+        Task *tcd = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "ctl-d item") == 0) tcd = x;
+        }
+        CHECK(tcd != NULL, "Ctrl+D target created");
+        if (tcd) {
+            gtk_list_box_select_row(GTK_LIST_BOX(tx->listbox),
+                                    GTK_LIST_BOX_ROW(tcd->row));
+            guint before = a->store.tasks->len;
+            h = on_window_key(NULL, GDK_KEY_d, 0, GDK_CONTROL_MASK, a);
+            CHECK(h && a->store.tasks->len == before - 1,
+                  "Ctrl+D deletes selected task");
+        }
+    }
+
+    /* 16. blank / marker-only quick adds are ignored */
+    {
+        Column *tb = a->col[S_TODO];
+        guint before = a->store.tasks->len;
+        create_add_row(tb, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tb->add_entry), "   ");
+        commit_add(tb, FALSE);
+        CHECK(a->store.tasks->len == before && tb->add_row == NULL,
+              "whitespace-only add ignored");
+        create_add_row(tb, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tb->add_entry), "!");
+        commit_add(tb, FALSE);
+        CHECK(a->store.tasks->len == before && tb->add_row == NULL,
+              "priority-marker-only add ignored");
+    }
+
+    /* 17. unicode + very long titles survive a round trip */
+    {
+        const char *uni = "café — naïve ✓ 日本語 😀";
+        Column *tu = a->col[S_TODO];
+        create_add_row(tu, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tu->add_entry), uni);
+        commit_add(tu, FALSE);
+        Task *tuni = NULL, *tbig = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, uni) == 0) tuni = x;
+        }
+        CHECK(tuni != NULL, "unicode title stored");
+        g_autofree gchar *big = g_strnfill(1000, 'x');
+        create_add_row(tu, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tu->add_entry), big);
+        commit_add(tu, FALSE);
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, big) == 0) tbig = x;
+        }
+        CHECK(tbig != NULL && strlen(tbig->title) == 1000,
+              "1000-character title stored intact");
+        if (tuni) delete_task(a, tuni);
+        if (tbig) delete_task(a, tbig);
+    }
+
+    /* 18. a past due date shows the overdue colour; a done task clears it */
+    {
+        Column *to = a->col[S_TODO];
+        create_add_row(to, 0);
+        gtk_editable_set_text(GTK_EDITABLE(to->add_entry), "overdue item");
+        commit_add(to, FALSE);
+        Task *tov = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "overdue item") == 0) tov = x;
+        }
+        CHECK(tov != NULL, "overdue task created");
+        if (tov) {
+            apply_due(a, tov, "2000-01-01");
+            GtkWidget *due = g_object_get_data(G_OBJECT(tov->row), "due");
+            CHECK(due && gtk_widget_has_css_class(due, "due-overdue"),
+                  "past due -> overdue class");
+            change_status(a, tov, S_DONE);
+            GtkWidget *due2 = g_object_get_data(G_OBJECT(tov->row), "due");
+            CHECK(due2 && !gtk_widget_has_css_class(due2, "due-overdue"),
+                  "done task clears overdue class");
+            delete_task(a, tov);
+        }
+    }
+
+    /* 19. clear_done removes completed tasks and persists */
+    {
+        Column *td = a->col[S_TODO];
+        create_add_row(td, 0);
+        gtk_editable_set_text(GTK_EDITABLE(td->add_entry), "clear me");
+        commit_add(td, FALSE);
+        Task *tcl = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "clear me") == 0) tcl = x;
+        }
+        if (tcl) change_status(a, tcl, S_DONE);
+        guint before = a->store.tasks->len;
+        gint nd = count_status(a, S_DONE);
+        CHECK(nd >= 1, "done task present before clear");
+        clear_done(a);
+        CHECK(count_status(a, S_DONE) == 0, "clear_done empties Done");
+        CHECK(a->store.tasks->len == before - (guint)nd,
+              "clear_done removes exactly the done tasks");
+    }
+
+    /* 20. every persisted task carries the CLI/GUI contract fields */
+    {
+        json_error_t jc;
+        json_t *rj = json_load_file(a->data_path, 0, &jc);
+        CHECK(rj != NULL, "store serialises to json");
+        if (rj) {
+            CHECK(json_is_integer(json_object_get(rj, "next_id")),
+                  "json next_id is an integer");
+            json_t *arr = json_object_get(rj, "tasks");
+            CHECK(json_is_array(arr), "json tasks is an array");
+            gboolean ok = json_is_array(arr);
+            size_t i;
+            json_t *o;
+            json_array_foreach(arr, i, o) {
+                if (!json_is_integer(json_object_get(o, "id"))) ok = FALSE;
+                if (!json_is_string(json_object_get(o, "title"))) ok = FALSE;
+                if (!json_is_boolean(json_object_get(o, "done"))) ok = FALSE;
+                const char *st = json_string_value(json_object_get(o, "status"));
+                if (!st || (strcmp(st, "todo") && strcmp(st, "progress") &&
+                            strcmp(st, "done"))) ok = FALSE;
+                const char *pr = json_string_value(json_object_get(o, "priority"));
+                if (!pr || (strcmp(pr, "high") && strcmp(pr, "med") &&
+                            strcmp(pr, "low"))) ok = FALSE;
+                json_t *du = json_object_get(o, "due");
+                if (!json_is_null(du) && !json_is_string(du)) ok = FALSE;
+                if (!json_is_string(json_object_get(o, "created"))) ok = FALSE;
+            }
+            CHECK(ok, "task contract: id/title/done/status/priority/due/created");
+            json_decref(rj);
+        }
+    }
+
+    /* 21. inline rename: Esc discards, focus-leave commits */
+    {
+        Column *trn = a->col[S_TODO];
+        create_add_row(trn, 0);
+        gtk_editable_set_text(GTK_EDITABLE(trn->add_entry), "rename me");
+        commit_add(trn, FALSE);
+        Task *tr = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "rename me") == 0) tr = x;
+        }
+        CHECK(tr != NULL, "rename-target created");
+        if (tr) {
+            start_rename(a, tr);
+            GtkWidget *e =
+                gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(tr->row));
+            CHECK(GTK_IS_ENTRY(e), "rename editor opens");
+            gtk_editable_set_text(GTK_EDITABLE(e), "discard this");
+            GtkEventController *kc = gtk_event_controller_key_new();
+            gtk_widget_add_controller(e, kc);
+            gboolean h = rename_key(GTK_EVENT_CONTROLLER_KEY(kc), GDK_KEY_Escape,
+                                    0, 0, a);
+            CHECK(h && g_strcmp0(tr->title, "rename me") == 0,
+                  "Esc discards the rename");
+
+            start_rename(a, tr);
+            e = gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(tr->row));
+            gtk_editable_set_text(GTK_EDITABLE(e), "committed name");
+            GtkEventController *fc = gtk_event_controller_focus_new();
+            gtk_widget_add_controller(e, fc);
+            rename_focus_left(GTK_EVENT_CONTROLLER_FOCUS(fc), a);
+            CHECK(g_strcmp0(tr->title, "committed name") == 0,
+                  "focus-leave commits the rename");
+            delete_task(a, tr);
+        }
+    }
+
+    /* 22. row context menu: Rename and Delete items */
+    {
+        Column *tm = a->col[S_TODO];
+        create_add_row(tm, 0);
+        gtk_editable_set_text(GTK_EDITABLE(tm->add_entry), "menu item");
+        commit_add(tm, FALSE);
+        Task *tmi = NULL;
+        for (guint i = 0; i < a->store.tasks->len; i++) {
+            Task *x = g_array_index(a->store.tasks, Task *, i);
+            if (g_strcmp0(x->title, "menu item") == 0) tmi = x;
+        }
+        CHECK(tmi != NULL, "menu-target created");
+        if (tmi) {
+            open_row_menu(a, tmi, tmi->row);
+            CHECK(a->popovers->len == 1, "row menu opened");
+            GtkWidget *pop = g_ptr_array_index(a->popovers,
+                                               a->popovers->len - 1);
+            GtkWidget *box = gtk_popover_get_child(GTK_POPOVER(pop));
+            GtkWidget *bren = gtk_widget_get_first_child(box);
+            g_signal_emit_by_name(bren, "clicked");
+            for (gint i = 0; i < 40; i++)
+                while (g_main_context_iteration(NULL, FALSE))
+                    ;
+            GtkWidget *e =
+                gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(tmi->row));
+            CHECK(GTK_IS_ENTRY(e), "menu Rename opens the editor");
+            GtkEventController *kc = gtk_event_controller_key_new();
+            gtk_widget_add_controller(e, kc);
+            rename_key(GTK_EVENT_CONTROLLER_KEY(kc), GDK_KEY_Escape, 0, 0, a);
+
+            open_row_menu(a, tmi, tmi->row);
+            pop = g_ptr_array_index(a->popovers, a->popovers->len - 1);
+            box = gtk_popover_get_child(GTK_POPOVER(pop));
+            GtkWidget *bdel = gtk_widget_get_last_child(box);
+            guint before = a->store.tasks->len;
+            g_signal_emit_by_name(bdel, "clicked");
+            CHECK(a->store.tasks->len == before - 1,
+                  "menu Delete removes the task");
+        }
+    }
+
     g_print("--- %s (%d failures) ---\n",
             a->selftest_fail ? "FAILURES" : "selftest OK", a->selftest_fail);
 #undef CHECK
@@ -1925,6 +2361,75 @@ static gboolean selftest_timer(gpointer ud) {
     App *a = ud;
     selftest_run(a);
     g_application_quit(G_APPLICATION(a->gapp));
+    return G_SOURCE_REMOVE;
+}
+
+/* Load-mode selftest: points at a fixture tasks.json produced elsewhere (the
+   CLI / the Python interop tests) and asserts the GUI read it correctly.
+   This is the counterpart to selftest_run, which writes its own store. */
+static gboolean selftest_load_timer(gpointer ud) {
+    App *a = ud;
+    g_print("--- tasks-gui load selftest ---\n");
+    gint fails = 0;
+#define LCHECK(cond, name)                                                    \
+    do {                                                                      \
+        gboolean b = (cond);                                                  \
+        if (!b) fails++;                                                      \
+        g_print("%s %s\n", b ? "PASS" : "FAIL", name);                        \
+    } while (0)
+
+    for (gint i = 0; i < 40; i++)
+        while (g_main_context_iteration(NULL, FALSE))
+            ;
+
+    LCHECK(a->store.tasks->len == 4, "loaded 4 tasks");
+    LCHECK(a->store.next_id == 5, "next_id restored from json");
+    if (a->store.tasks->len == 4) {
+        Task *t0 = g_array_index(a->store.tasks, Task *, 0);
+        Task *t1 = g_array_index(a->store.tasks, Task *, 1);
+        Task *t2 = g_array_index(a->store.tasks, Task *, 2);
+        Task *t3 = g_array_index(a->store.tasks, Task *, 3);
+        LCHECK(t0->id == 1 && g_strcmp0(t0->title, "cligh") == 0 &&
+                  t0->status == S_TODO && t0->prio == P_HIGH &&
+                  g_strcmp0(t0->due, "2026-01-01") == 0 &&
+                  g_strcmp0(t0->created, "2026-01-01") == 0,
+              "task 1: all fields loaded");
+        LCHECK(t1->id == 2 && t1->status == S_PROG && t1->prio == P_LOW &&
+                  t1->due == NULL,
+              "task 2: progress + null due loaded");
+        LCHECK(t2->id == 3 && t2->status == S_DONE && t2->prio == P_MED,
+              "task 3: done loaded");
+        LCHECK(t3->id == 4 && t3->status == S_DONE && t3->prio == P_MED &&
+                  t3->due == NULL && g_strcmp0(t3->created, "2026-01-04") == 0,
+              "task 4: legacy done-only normalised");
+        LCHECK(count_status(a, S_TODO) == 1 && count_status(a, S_PROG) == 1 &&
+                  count_status(a, S_DONE) == 2,
+              "column counts match loaded store");
+        LCHECK(t0->row && t1->row && t2->row && t3->row,
+              "rows built for every loaded task");
+        LCHECK(gtk_widget_get_parent(t0->row) == a->col[S_TODO]->listbox &&
+                  gtk_widget_get_parent(t1->row) == a->col[S_PROG]->listbox &&
+                  gtk_widget_get_parent(t2->row) == a->col[S_DONE]->listbox &&
+                  gtk_widget_get_parent(t3->row) == a->col[S_DONE]->listbox,
+              "rows parented to the right columns");
+    }
+
+    /* resave and reload: the contract fields survive a GUI round trip */
+    save_store(a);
+    json_error_t je;
+    json_t *r = json_load_file(a->data_path, 0, &je);
+    LCHECK(r != NULL, "resaved store reloads");
+    if (r) {
+        LCHECK(json_array_size(json_object_get(r, "tasks")) == 4,
+               "resave keeps all 4 tasks");
+        json_decref(r);
+    }
+
+    g_print("--- %s (%d failures) ---\n",
+            fails ? "FAILURES" : "load selftest OK", fails);
+    a->selftest_fail += fails;
+    g_application_quit(G_APPLICATION(a->gapp));
+#undef LCHECK
     return G_SOURCE_REMOVE;
 }
 
@@ -1985,6 +2490,9 @@ static void on_activate(GApplication *gapp, gpointer ud) {
     if (getenv("TASKS_SELFTEST")) {
         a->selftest = TRUE;
         g_timeout_add(250, selftest_timer, a);
+    } else if (getenv("TASKS_SELFTEST_LOAD")) {
+        a->selftest = TRUE;
+        g_timeout_add(250, selftest_load_timer, a);
     }
 #ifdef TASKS_GEOM
     g_timeout_add(500, debug_geom_timer, a);
@@ -1993,6 +2501,13 @@ static void on_activate(GApplication *gapp, gpointer ud) {
 
 int main(int argc, char **argv) {
     setbuf(stdout, NULL);
+    for (int i = 1; i < argc; i++) {
+        if (g_strcmp0(argv[i], "--version") == 0 ||
+            g_strcmp0(argv[i], "-v") == 0) {
+            g_print("tasks-gui %s\n", VERSION);
+            return 0;
+        }
+    }
     App a;
     memset(&a, 0, sizeof a);
     a.gapp = gtk_application_new(APP_ID, G_APPLICATION_DEFAULT_FLAGS);
