@@ -587,6 +587,28 @@ static void open_due_popover(App *a, Task *t, GtkWidget *anchor) {
     gtk_widget_grab_focus(e);
 }
 
+/* The context menu is still mapped while its "Due date" item runs; mapping the
+   due popover right then asks GDK for a second grabbing popup under a non top
+   most parent, which it refuses ("Tried to map a grabbing popup with a
+   non-top most parent"). The half-taken grab then swallows every later click
+   and key in the window, so the app looks frozen. Close the menu first and do
+   the open in the next idle, once the menu is really gone. */
+typedef struct {
+    App *a;
+    Task *t;
+    GtkWidget *row; /* weak pointer: NULLed if the row is destroyed first */
+} DueOpenReq;
+
+static gboolean open_due_idle(gpointer ud) {
+    DueOpenReq *r = ud;
+    if (r->row) {
+        open_due_popover(r->a, r->t, r->row);
+        g_object_remove_weak_pointer(G_OBJECT(r->row), (gpointer *)&r->row);
+    }
+    g_free(r);
+    return G_SOURCE_REMOVE;
+}
+
 /* ---- inline rename (double-click / right-click → Rename) ------------------ */
 
 /* swap the inline editor back to the original row content */
@@ -720,7 +742,14 @@ static void row_menu_due(GtkButton *b, gpointer ud) {
     Task *t = ud;
     GtkWidget *anchor = t->row;
     close_all_popovers(t->app);
-    open_due_popover(t->app, t, anchor);
+    /* open in the next idle: the menu above is still mapped right now (see
+       open_due_idle) and mapping over it would freeze input in the window */
+    DueOpenReq *r = g_new0(DueOpenReq, 1);
+    r->a = t->app;
+    r->t = t;
+    r->row = anchor;
+    g_object_add_weak_pointer(G_OBJECT(anchor), (gpointer *)&r->row);
+    g_idle_add(open_due_idle, r);
 }
 
 static void row_menu_delete(GtkButton *b, gpointer ud) {
@@ -860,6 +889,9 @@ static GtkWidget *build_row(App *a, Task *t) {
     gtk_widget_add_css_class(title, "task-title");
     gtk_label_set_xalign(GTK_LABEL(title), 0.0);
     gtk_widget_set_halign(title, GTK_ALIGN_START);
+    /* shrink rather than force the whole column (and so the window) wider than
+       the tile the compositor gives us */
+    gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_END);
     GtkWidget *due = gtk_label_new("");
     gtk_widget_add_css_class(due, "due-label");
     gtk_label_set_xalign(GTK_LABEL(due), 0.0);
@@ -1382,6 +1414,13 @@ static gboolean on_window_key(GtkEventControllerKey *c, guint k, guint kc,
                               GdkModifierType st, gpointer ud) {
     (void)c; (void)kc;
     App *a = ud;
+    if (k == GDK_KEY_F11) {
+        if (gtk_window_is_fullscreen(GTK_WINDOW(a->win)))
+            gtk_window_unfullscreen(GTK_WINDOW(a->win));
+        else
+            gtk_window_fullscreen(GTK_WINDOW(a->win));
+        return TRUE;
+    }
     if ((st & GDK_CONTROL_MASK) && k == GDK_KEY_n) {
         Column *todo = a->col[S_TODO];
         if (!todo->add_row) create_add_row(todo, 0);
@@ -1528,7 +1567,9 @@ static void build_window(App *a) {
     a->win = win;
     gtk_window_set_title(GTK_WINDOW(win), "tasks");
     gtk_window_set_default_size(GTK_WINDOW(win), 980, 620);
-    gtk_widget_set_size_request(GTK_WIDGET(win), 640, 400);
+    /* keep the floor low enough that Hyprland can still tile us into a small
+       slot; a large minimum made the client render wider than its surface */
+    gtk_widget_set_size_request(GTK_WIDGET(win), 480, 320);
 
     GtkWidget *hb = gtk_header_bar_new();
     gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(hb), TRUE);
@@ -1572,6 +1613,17 @@ static void build_window(App *a) {
 }
 
 /* ---- selftest ------------------------------------------------------------ */
+
+/* Count GDK's "grabbing popup" warnings so the context-menu → Due date path
+   can be asserted to open cleanly (the old code mapped the due popover while
+   the menu still held the grab, leaving the window frozen). */
+static gint selftest_popup_warnings = 0;
+static void selftest_log_handler(const gchar *domain, GLogLevelFlags level,
+                                 const gchar *message, gpointer ud) {
+    (void)domain; (void)level; (void)ud;
+    if (message && strstr(message, "grabbing popup"))
+        selftest_popup_warnings++;
+}
 
 static void selftest_run(App *a) {
     g_print("--- tasks-gui selftest ---\n");
@@ -1810,6 +1862,37 @@ static void selftest_run(App *a) {
             }
             json_decref(r2);
         }
+    }
+
+    /* 11e. row context menu → Due date must not fight over the popup grab.
+       The menu and the due popover are both grabbing popups; opening the due
+       one while the menu is still mapped made GDK refuse the grab and froze
+       all input in the window. The open is now deferred to the next idle. */
+    if (tc && tc->row && gtk_widget_get_mapped(a->win)) {
+        selftest_popup_warnings = 0;
+        g_log_set_default_handler(selftest_log_handler, NULL);
+        open_row_menu(a, tc, tc->row);
+        if (a->popovers->len) {
+            GtkWidget *mpop =
+                g_ptr_array_index(a->popovers, a->popovers->len - 1);
+            GtkWidget *mchild = gtk_popover_get_child(GTK_POPOVER(mpop));
+            GtkWidget *bdue =
+                gtk_widget_get_next_sibling(gtk_widget_get_first_child(mchild));
+            g_signal_emit_by_name(bdue, "clicked");
+        }
+        for (gint i = 0; i < 40; i++)
+            while (g_main_context_iteration(NULL, FALSE))
+                ;
+        CHECK(selftest_popup_warnings == 0,
+              "due popover opens without a grabbing-popup warning");
+        CHECK(a->popovers->len == 1, "due popover is the only popup open");
+        close_all_popovers(a);
+        for (gint i = 0; i < 40; i++)
+            while (g_main_context_iteration(NULL, FALSE))
+                ;
+        CHECK(a->popovers->len == 0, "popovers closed after due menu");
+    } else {
+        g_print("SKIP due-popover grab check (window not mapped)\n");
     }
 
     g_print("--- %s (%d failures) ---\n",
