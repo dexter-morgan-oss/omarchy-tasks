@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, timedelta
+import sys
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 APP = "tasks"
@@ -30,23 +31,62 @@ def data_file() -> Path:
     return base / APP / "tasks.json"
 
 
+def _quarantine(f: Path) -> None:
+    """Move an unreadable store aside so the next save can't silently clobber
+    it. The original bytes are preserved for manual recovery."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = f.with_name(f"{f.name}.corrupt-{stamp}")
+    try:
+        f.replace(dest)
+        print(f"tasks: unreadable store backed up to {dest}", file=sys.stderr)
+    except OSError:
+        pass
+
+
+def _bump_next_id(data: dict) -> None:
+    """Keep next_id ahead of every stored id, so a stale counter (e.g. another
+    writer appended with a higher id) can't produce duplicate ids."""
+    top = 0
+    for task in data.get("tasks", []):
+        try:
+            tid = int(task.get("id", 0))
+        except (TypeError, ValueError):
+            tid = 0
+        if tid > top:
+            top = tid
+    try:
+        nid = int(data.get("next_id", 1))
+    except (TypeError, ValueError):
+        nid = 1
+    if nid <= top:
+        data["next_id"] = top + 1
+
+
 def load() -> dict:
     f = data_file()
     try:
         with f.open(encoding="utf-8") as fp:
             data = json.load(fp)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return {"next_id": 1, "tasks": []}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _quarantine(f)
+        return {"next_id": 1, "tasks": []}
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        _quarantine(f)
         return {"next_id": 1, "tasks": []}
     data.setdefault("next_id", 1)
     data.setdefault("tasks", [])
     for task in data["tasks"]:
         normalize(task)
+    _bump_next_id(data)
     return data
 
 
 def save(data: dict) -> None:
     for task in data["tasks"]:
         normalize(task)
+    _bump_next_id(data)
     f = data_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".tmp")

@@ -24,6 +24,9 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define APP_ID  "org.omarchy.tasks"
 #define VERSION "1.1.0"   /* keep in sync with tasks.py */
@@ -264,10 +267,26 @@ static void parse_quick(const char *text, char **title_out, gint *prio_out,
     g_free(buf);
 }
 
+static gboolean id_in_use(App *a, gint id) {
+    for (guint i = 0; i < a->store.tasks->len; i++)
+        if (g_array_index(a->store.tasks, Task *, i)->id == id) return TRUE;
+    return FALSE;
+}
+
+/* Hand out a free id. Guards against a stale next_id (e.g. the CLI appended a
+   task with a higher id while this instance was open) rather than trusting the
+   counter blindly and producing duplicate ids. */
+static gint alloc_id(App *a) {
+    gint id = a->store.next_id > 0 ? a->store.next_id : 1;
+    while (id_in_use(a, id)) id++;
+    a->store.next_id = id + 1;
+    return id;
+}
+
 static Task *task_new(App *a, const char *title, gint prio, const char *due,
                       gint status) {
     Task *t = g_new0(Task, 1);
-    t->id = a->store.next_id++;
+    t->id = alloc_id(a);
     t->title = g_strdup(title);
     t->prio = prio;
     t->status = status;
@@ -307,6 +326,9 @@ static void store_append_json(App *a, json_t *root) {
         t->created = cre ? g_strdup(cre) : today_iso();
         t->app = a;
         g_array_append_val(a->store.tasks, t);
+        /* never hand out an id that is already taken, even if the file's
+           next_id was stale (e.g. another writer appended meanwhile) */
+        if (t->id >= a->store.next_id) a->store.next_id = t->id + 1;
     }
 }
 
@@ -315,7 +337,13 @@ static void store_append_json(App *a, json_t *root) {
 static json_t *store_to_json(App *a) {
     json_t *root = json_object();
     json_t *tasks = json_array();
-    json_object_set_new(root, "next_id", json_integer(a->store.next_id));
+    gint maxid = 0;
+    for (guint i = 0; i < a->store.tasks->len; i++) {
+        Task *t = g_array_index(a->store.tasks, Task *, i);
+        if (t->id > maxid) maxid = t->id;
+    }
+    gint nid = a->store.next_id > maxid ? a->store.next_id : maxid + 1;
+    json_object_set_new(root, "next_id", json_integer(nid));
     for (guint i = 0; i < a->store.tasks->len; i++) {
         Task *t = g_array_index(a->store.tasks, Task *, i);
         json_t *o = json_object();
@@ -333,12 +361,31 @@ static json_t *store_to_json(App *a) {
     return root;
 }
 
+/* Move an unreadable store aside so the next save cannot silently clobber it.
+   Returns the backup path (caller frees) or NULL on failure. */
+static gchar *backup_corrupt(App *a) {
+    if (!g_file_test(a->data_path, G_FILE_TEST_EXISTS)) return NULL;
+    g_autoptr(GDateTime) now = g_date_time_new_now_local();
+    g_autofree gchar *stamp = g_date_time_format(now, "%Y%m%d-%H%M%S");
+    gchar *dest = g_strdup_printf("%s.corrupt-%s", a->data_path, stamp);
+    if (g_rename(a->data_path, dest) != 0) {
+        g_free(dest);
+        return NULL;
+    }
+    return dest;
+}
+
 static gboolean load_store(App *a) {
     json_error_t jerr;
     json_t *root = json_load_file(a->data_path, JSON_PRESERVE_ORDER, &jerr);
     if (!root) {
         if (!g_file_test(a->data_path, G_FILE_TEST_EXISTS)) return TRUE;
-        g_warning("tasks: json parse error: %s", jerr.text);
+        g_autofree gchar *bak = backup_corrupt(a);
+        if (bak)
+            g_warning("tasks: unreadable store backed up to %s (%s)",
+                      bak, jerr.text);
+        else
+            g_warning("tasks: json parse error: %s", jerr.text);
         return FALSE;
     }
     store_append_json(a, root);
@@ -350,9 +397,33 @@ static gboolean save_store(App *a) {
     json_t *root = store_to_json(a);
     g_autofree gchar *dir = g_path_get_dirname(a->data_path);
     g_mkdir_with_parents(dir, 0700);
-    gboolean ok = json_dump_file(root, a->data_path, JSON_INDENT(2)) == 0;
+    gchar *text = json_dumps(root, JSON_INDENT(2));
     json_decref(root);
-    return ok;
+    if (!text) return FALSE;
+
+    /* Write a sibling temp file, flush it to disk, then rename it over the
+       store. rename(2) is atomic, so a crash (or full disk) mid-write can
+       never leave a truncated tasks.json behind. */
+    g_autofree gchar *tmp = g_strconcat(a->data_path, ".tmpXXXXXX", NULL);
+    gint fd = g_mkstemp_full(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { g_free(text); return FALSE; }
+    gboolean ok = TRUE;
+    gsize len = strlen(text), off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, text + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = FALSE;
+            break;
+        }
+        off += (gsize)n;
+    }
+    if (ok && fsync(fd) != 0) ok = FALSE;
+    if (close(fd) != 0) ok = FALSE;
+    g_free(text);
+    if (!ok) { g_unlink(tmp); return FALSE; }
+    if (g_rename(tmp, a->data_path) != 0) { g_unlink(tmp); return FALSE; }
+    return TRUE;
 }
 
 
@@ -815,9 +886,10 @@ static gboolean matches_query(App *a, Task *t) {
     if (!a->search_active) return TRUE;
     const char *q = query(a);
     if (!*q) return TRUE;
-    g_autofree gchar *tl = g_ascii_strdown(t->title, -1);
-    g_autofree gchar *ql = g_ascii_strdown(q, -1);
-    return strstr(tl, ql) != NULL;
+    /* casefold rather than g_ascii_strdown so non-ASCII titles match too */
+    g_autofree gchar *hay = g_utf8_casefold(t->title, -1);
+    g_autofree gchar *needle = g_utf8_casefold(q, -1);
+    return strstr(hay, needle) != NULL;
 }
 
 /* ---- store / array helpers --------------------------------------------- */
@@ -2219,6 +2291,14 @@ static void selftest_run(App *a) {
             if (t->row && matches_query(a, t)) vis++;
         }
         CHECK(vis == 1, "search shows one row");
+        /* case folding must not be ASCII-only */
+        Task ut;
+        memset(&ut, 0, sizeof ut);
+        ut.title = (char *)"Caf\xc3\xa9 \xc3\x80\xc3\x89\xc3\x8e";
+        gtk_editable_set_text(GTK_EDITABLE(se), "caf\xc3\xa9");
+        CHECK(matches_query(a, &ut), "search casefolds accented titles");
+        gtk_editable_set_text(GTK_EDITABLE(se), "CAF\xc3\x89");
+        CHECK(matches_query(a, &ut), "search matches uppercase accented text");
         clear_search(a, TRUE);
         CHECK(!a->search_active, "search cleared");
     }
@@ -2746,6 +2826,50 @@ static void selftest_run(App *a) {
             CHECK(ok, "task contract: id/title/done/status/priority/due/created");
             json_decref(rj);
         }
+    }
+
+    /* 20b. storage safety: atomic save, id collisions, corrupt backup */
+    {
+        save_store(a);
+        g_autofree gchar *sdir = g_path_get_dirname(a->data_path);
+        g_autofree gchar *sbase = g_path_get_basename(a->data_path);
+        g_autofree gchar *spref = g_strconcat(sbase, ".tmp", NULL);
+        GDir *sd = g_dir_open(sdir, 0, NULL);
+        gboolean leftover = FALSE;
+        const gchar *sname;
+        while (sd && (sname = g_dir_read_name(sd)))
+            if (g_str_has_prefix(sname, spref)) leftover = TRUE;
+        if (sd) g_dir_close(sd);
+        CHECK(!leftover, "atomic save leaves no temp file behind");
+
+        if (a->store.tasks->len > 0) {
+            gint taken = g_array_index(a->store.tasks, Task *, 0)->id;
+            gint saved = a->store.next_id;
+            a->store.next_id = taken;      /* pretend the counter went stale */
+            gint got = alloc_id(a);
+            CHECK(got != taken, "alloc_id skips an id already in use");
+            a->store.next_id = saved;
+        }
+
+        g_autofree gchar *cdir = g_dir_make_tmp("tasks-corrupt-XXXXXX", NULL);
+        g_autofree gchar *cfile = g_build_filename(cdir, "tasks.json", NULL);
+        g_file_set_contents(cfile, "{ broken", -1, NULL);
+        gchar *saved_path = a->data_path;
+        a->data_path = g_strdup(cfile);
+        backup_corrupt(a);
+        g_autofree gchar *cbase = g_path_get_basename(cfile);
+        g_autofree gchar *cpat = g_strdup_printf("%s.corrupt-*", cbase);
+        GPatternSpec *ps = g_pattern_spec_new(cpat);
+        gboolean found = FALSE;
+        GDir *cd = g_dir_open(cdir, 0, NULL);
+        while (cd && (sname = g_dir_read_name(cd)))
+            if (g_pattern_spec_match_string(ps, sname)) found = TRUE;
+        if (cd) g_dir_close(cd);
+        g_pattern_spec_free(ps);
+        CHECK(found && !g_file_test(cfile, G_FILE_TEST_EXISTS),
+              "corrupt store is quarantined, not overwritten");
+        g_free(a->data_path);
+        a->data_path = saved_path;
     }
 
     /* 21. inline rename: Esc discards, focus-leave commits */

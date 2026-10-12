@@ -57,6 +57,38 @@ class TestLoadSave(IsolatedDataHome):
         self.data_file.write_text("{not json", encoding="utf-8")
         self.assertEqual(taskstore.load(), {"next_id": 1, "tasks": []})
 
+    def test_malformed_json_is_quarantined_not_deleted(self):
+        self.data_file.parent.mkdir(parents=True)
+        self.data_file.write_text("{not json", encoding="utf-8")
+        taskstore.load()
+        backups = list(self.data_file.parent.glob("tasks.json.corrupt-*"))
+        self.assertEqual(len(backups), 1, "corrupt store should be backed up")
+        self.assertEqual(baks := backups[0].read_text(encoding="utf-8"),
+                         "{not json")
+        # the original is moved aside, so a later save starts from a clean file
+        self.assertFalse(self.data_file.exists())
+
+    def test_load_non_dict_payload_is_quarantined(self):
+        self.data_file.parent.mkdir(parents=True)
+        self.data_file.write_text("[1, 2, 3]", encoding="utf-8")
+        self.assertEqual(taskstore.load(), {"next_id": 1, "tasks": []})
+        self.assertEqual(len(list(self.data_file.parent.glob("*.corrupt-*"))), 1)
+
+    def test_load_bumps_stale_next_id(self):
+        self.data_file.parent.mkdir(parents=True)
+        self.data_file.write_text(json.dumps({
+            "next_id": 1,
+            "tasks": [{"id": 1, "title": "a"}, {"id": 5, "title": "b"}],
+        }), encoding="utf-8")
+        data = taskstore.load()
+        self.assertEqual(data["next_id"], 6)
+
+    def test_save_bumps_stale_next_id(self):
+        data = {"next_id": 2, "tasks": [{"id": 9, "title": "b"}]}
+        taskstore.save(data)
+        again = json.loads(self.data_file.read_text(encoding="utf-8"))
+        self.assertEqual(again["next_id"], 10)
+
     def test_save_then_load_round_trip(self):
         data = {"next_id": 1, "tasks": []}
         taskstore.new_task(data, "write docs", priority="high", due="2026-05-01")

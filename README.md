@@ -149,6 +149,14 @@ Everything lives in one file: `~/.local/share/tasks/tasks.json`
 (`todo`/`progress`/`done`); the legacy `done` boolean stays in sync so the CLI
 keeps working. Back it up by copying that one file.
 
+Writes are **atomic** (a temp file is flushed and renamed over the store), so a
+crash mid-save can never leave a half-written file. If the store is ever
+unreadable, both the GUI and CLI move it aside to `tasks.json.corrupt-<stamp>`
+instead of overwriting it, then start from an empty board — your data is kept
+for recovery. `next_id` is also re-derived from the real maximum id on load and
+save, so a stale counter can't mint duplicate ids when the CLI and GUI write
+the same store.
+
 ## Uninstall
 
 ```bash
@@ -185,7 +193,7 @@ bash tests/run_all.sh
 | `tests/test_interop.py` | the CLI ↔ GUI `tasks.json` contract (field types, statuses, legacy `done`-only stores, due normalisation) |
 | `tests/gui_selftest.sh` | builds `tasks-gui` with `-Wall -Wextra -Werror`, then runs its embedded selftests |
 
-The GUI has two built-in self-test modes (**145 checks**; handlers are driven
+The GUI has two built-in self-test modes (**150 checks**; handlers are driven
 directly so they run in a plain GTK loop). Besides the drag/keyboard/rename/
 context-menu/JSON-contract paths, they cover the config parser, the Omarchy
 `colors.toml` parser and generated CSS (including that a parsed palette is

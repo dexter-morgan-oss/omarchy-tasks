@@ -112,6 +112,11 @@ else
     bad "GUI crashed or misbehaved on corrupt json (rc=$rc)"
     printf '%s\n' "$out" | tail -5
 fi
+if compgen -G "$TMP/broken/tasks/tasks.json.corrupt-*" >/dev/null; then
+    ok "corrupt store was quarantined, not overwritten"
+else
+    bad "corrupt store was not backed up"
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
