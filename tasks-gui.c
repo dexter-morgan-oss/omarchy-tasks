@@ -579,17 +579,21 @@ static gchar *css_from_theme(const Theme *t) {
     const gchar *bg     = t->background ? t->background : "#040814";
     const gchar *accent = t->accent ? t->accent
                           : (t->blue ? t->blue : "#5b8cff");
-    const gchar *muted  = t->muted ? t->muted : "#8ba0c8";
-    const gchar *bright = t->bright_fg ? t->bright_fg : fg;
+    const gchar *bright = fg;
     const gchar *red    = t->red ? t->red : "#ff5c66";
     const gchar *green  = t->green ? t->green : "#63cf7d";
     const gchar *yellow = t->yellow ? t->yellow
                                     : (t->orange ? t->orange : "#f2b455");
+    /* Surfaces and muted text blend the theme's own bg toward its fg, so the
+       result stays readable for dark AND light themes. Never derive a surface
+       from the foreground alone: a white fg (e.g. Vantablack) would otherwise
+       yield white panels, making white task text invisible on them. */
+    g_autofree gchar *muted     = mix_hex(fg, bg, 0.40);
     g_autofree gchar *med       = mix_hex(fg, bg, 0.45);
-    g_autofree gchar *win_bg    = hex_rgba(t->background ? t->background : "#040814", 0.72);
-    g_autofree gchar *head_bg   = hex_rgba(mix_hex(muted, "#000000", 0.55), 0.55);
-    g_autofree gchar *panel_bg  = hex_rgba(mix_hex(bright, "#ffffff", 0.05), 0.52);
-    g_autofree gchar *entry_bg  = hex_rgba(mix_hex(t->background ? t->background : "#040814", "#000000", 0.20), 0.66);
+    g_autofree gchar *win_bg    = hex_rgba(bg, 0.72);
+    g_autofree gchar *head_bg   = hex_rgba(mix_hex(bg, fg, 0.03), 0.55);
+    g_autofree gchar *panel_bg  = hex_rgba(mix_hex(bg, fg, 0.07), 0.52);
+    g_autofree gchar *entry_bg  = hex_rgba(mix_hex(bg, fg, 0.05), 0.66);
     g_autofree gchar *border    = hex_rgba(accent, 0.11);
     g_autofree gchar *border2   = hex_rgba(accent, 0.35);
     g_autofree gchar *sel_bg    = hex_rgba(accent, 0.24);
@@ -2844,6 +2848,22 @@ static void selftest_run(App *a) {
         CHECK(strstr(tcss, "#7aa2f7") != NULL, "theme CSS: accent colour");
         CHECK(strstr(tcss, "#f7768e") != NULL,
               "theme CSS: high-priority red");
+        /* Regression: surfaces must blend bg->fg, never be derived from a
+           light foreground, or a white-fg theme (e.g. Vantablack) yields
+           white panels and white task text becomes invisible. */
+        CHECK(strstr(tcss, "rgba(30, 34, 38, 0.52)") != NULL,
+              "theme CSS: panel blended from background");
+        Theme twhite;
+        memset(&twhite, 0, sizeof twhite);
+        twhite.background = g_strdup("#000000");
+        twhite.foreground = g_strdup("#ffffff");
+        twhite.ok = TRUE;
+        g_autofree gchar *tcss2 = css_from_theme(&twhite);
+        CHECK(strstr(tcss2, "rgba(17, 17, 17, 0.52)") != NULL,
+              "theme CSS: dark panel when foreground is white");
+        CHECK(strstr(tcss2, "rgba(255, 255, 255, 0.52)") == NULL,
+              "theme CSS: panel never derived from a white foreground");
+        theme_clear(&twhite);
 
         /* apply the fixture palette for real, then put the live app theme back */
 #if GTK_CHECK_VERSION(4, 12, 0)

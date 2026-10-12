@@ -178,7 +178,7 @@ bash tests/run_all.sh
 | `tests/test_interop.py` | the CLI ↔ GUI `tasks.json` contract (field types, statuses, legacy `done`-only stores, due normalisation) |
 | `tests/gui_selftest.sh` | builds `tasks-gui` with `-Wall -Wextra -Werror`, then runs its embedded selftests |
 
-The GUI has two built-in self-test modes (**133 checks**; handlers are driven
+The GUI has two built-in self-test modes (**136 checks**; handlers are driven
 directly so they run in a plain GTK loop). Besides the drag/keyboard/rename/
 context-menu/JSON-contract paths, they cover the config parser, the Omarchy
 `colors.toml` parser and generated CSS (including that a parsed palette is
