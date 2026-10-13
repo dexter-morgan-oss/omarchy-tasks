@@ -1,0 +1,90 @@
+name: Bug report
+description: Something in the GUI, CLI/TUI or the install didn't work as expected.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this — real-world reports are what
+        keep the app improving. A few details make fixes much faster.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+      placeholder: I dragged a card into Done and the window went blank.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that reliably triggers it.
+      placeholder: |
+        1. Launch Tasks
+        2. Add a task
+        3. Drag it into Done
+        4. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part?
+      options:
+        - GUI (tasks-gui)
+        - CLI (tasks)
+        - TUI (run `tasks` with no arguments)
+        - Install / packaging
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `tasks version` (or `tasks-gui --version`).
+      placeholder: "1.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Omarchy / Arch version
+      description: e.g. Omarchy 4.0.4, or your Arch kernel/version if not on Omarchy.
+    validations:
+      required: false
+
+  - type: input
+    id: theme
+    attributes:
+      label: Active theme
+      description: "`cat ~/.local/state/omarchy/current/theme.name` (useful for colour/layout bugs)."
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration (if you changed it)
+      description: Contents of `~/.config/omarchy-tasks/config.ini`.
+      render: ini
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or extra context
+      description: |
+        Anything else that helps. If the GUI crashed, a backtrace or the
+        `coredumpctl` output is gold. **Please redact private task text.**
+      render: shell
+    validations:
+      required: false

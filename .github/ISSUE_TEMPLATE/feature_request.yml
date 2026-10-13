@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest an idea, a shortcut, or a change in behaviour.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas that come from real use are the best kind. Tell me how you work
+        and what would make the app fit that better.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: The workflow that feels awkward today.
+      placeholder: I keep a running list of small tasks and want them out of the way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      placeholder: A collapsed "Someday" column I can toggle.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Including any workaround you use today.
+    validations:
+      required: false

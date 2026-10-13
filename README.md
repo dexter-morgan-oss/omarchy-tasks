@@ -132,6 +132,10 @@ crash can never leave a half-written file. If the store is ever unreadable, both
 the GUI and CLI move it aside to `tasks.json.corrupt-<stamp>` instead of
 overwriting it, then start from an empty board — nothing is lost.
 
+> **Note:** the GUI reads the store once, when it starts. If you edit tasks from
+> the CLI while the GUI is open, quit and relaunch the GUI to see the change —
+> otherwise the next GUI edit wins.
+
 ## Uninstall
 
 ```bash
@@ -153,6 +157,19 @@ make install    # per-user install into ~/.local/bin
 The suite covers storage, the CLI, CLI/GUI interop, and the GUI itself, which
 runs **156 embedded checks** driving its real handlers. GUI tests skip cleanly
 on a headless machine.
+
+## Feedback & contributing
+
+This app gets better because people use it and report what breaks. If something
+misbehaves — a theme that renders oddly, a drag that won't stick, an install that
+fails — please say so.
+
+- **Found a bug?** [Open a bug report](https://github.com/dexter-morgan-oss/omarchy-tasks/issues/new?template=bug_report.yml)
+- **Have an idea?** [Request a feature](https://github.com/dexter-morgan-oss/omarchy-tasks/issues/new?template=feature_request.yml) or start a [Discussion](https://github.com/dexter-morgan-oss/omarchy-tasks/discussions)
+- **Questions / show-and-tell?** The [Omarchy Discord](https://discord.gg/tXFUdasqhY)
+- **Want to send a PR?** See [CONTRIBUTING.md](CONTRIBUTING.md)
+
+Release history and what changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

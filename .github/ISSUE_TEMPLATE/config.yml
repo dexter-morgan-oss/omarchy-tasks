@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & ideas (Discussions)
+    url: https://github.com/dexter-morgan-oss/omarchy-tasks/discussions
+    about: Ask a question or float an idea before opening an issue.
+  - name: Omarchy community (Discord)
+    url: https://discord.gg/tXFUdasqhY
+    about: General Omarchy help, and the show-and-tell channel.
+  - name: Report a security issue privately
+    url: https://github.com/dexter-morgan-oss/omarchy-tasks/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
