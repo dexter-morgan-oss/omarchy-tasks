@@ -1,4 +1,4 @@
-# Maintainer: Ragul <rpohee@gmail.com>
+# Maintainer: Ragul <dexter-morgan-oss@users.noreply.github.com>
 #
 # Tasks — a minimal 3-column kanban task manager for Omarchy (GTK4 GUI + CLI).
 #
@@ -6,7 +6,7 @@
 # (including a bare AUR checkout). No reclone needed.
 
 pkgname=tasks-gui
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Minimal 3-column kanban task manager for Omarchy (GTK4 GUI + CLI)"
 arch=('x86_64' 'aarch64')

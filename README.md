@@ -1,162 +1,126 @@
 # Tasks
 
-A minimal **3-column kanban** task manager for [Omarchy](https://omarchy.org) —
-text and colour only (no icon clutter), smooth drag-and-drop, built for people
-who live in the keyboard. The GUI is a small native **C + GTK4** binary, so it
-starts instantly and stays light; a zero-dependency **CLI/TUI** shares the same
-JSON store.
+A minimal **3-column kanban board for Omarchy**, built for the keyboard. The GUI
+is a small native **GTK4** app in C, so it starts instantly and stays light; a
+zero-dependency **CLI/TUI** shares the very same JSON store.
 
 ```
-┌─ To Do ────────┐  ┌─ In Progress ──┐  ┌─ Done ─────────┐
-│ ○ ship v1      │  │ ● review PR    │  │ ✓ write notes  │
-│ ● buy milk     │  │                │  │                │
+┌─ To Do ──────────┐  ┌─ In Progress ────┐  ┌─ Done ───────────┐
+│ ○ ship v1        │  │ ● review PR      │  │ ✓ write notes    │
+│ ● buy milk       │  │                  │  │                  │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-- **Columns**: To Do · In Progress · Done — each stretches with the window
-- **Drag any task** between columns, or reorder within one
-- **Drag to Done = complete**; drag back out to reopen
-- **Click empty column space** to drop an add box right there
-- Priority shown by **colour** — the title is tinted (high red · normal gray ·
-  low green) with a small dot you can click to cycle
-- **Follows your Omarchy theme**: reads the active
-  `~/.local/state/omarchy/current/theme/colors.toml` at runtime and reloads
-  **live** when you switch themes (falls back to a built-in deep-blue palette)
-- **Undo** any Delete / Clear Done with `Ctrl+Z`
-- **Due-date notifications** for overdue and due-today tasks (once a day)
-- **Drag-only completion** — no key moves a task between columns
-- A **rotating shortcut ticker** along the bottom of the window shows one tip
-  at a time, crossfading every few seconds (paused while the window is unfocused)
-- Keyboard-driven: `Ctrl+N` add, `Ctrl+F` search, `Ctrl+Shift+D` clear done, `Ctrl+Z` undo, `Del` remove
-- **One JSON file** — no database, no daemon, no server
-
-## Requirements
-
-- An Omarchy / Arch system with **GTK4** and **jansson**
-- To build: `gcc` + `pkgconf` (`sudo pacman -S --needed gtk4 jansson`)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Install
 
-### Option A — package (recommended)
+**Arch / Omarchy — build and install system-wide:**
 
 ```bash
 git clone https://github.com/dexter-morgan-oss/omarchy-tasks
 cd omarchy-tasks
-makepkg -si
-tasks-setup-user          # wire up the launcher + Super+Shift+T
+makepkg -si            # builds from the released tag tarball
+tasks-setup-user       # add launcher, menu row and Super+Shift+T
 ```
 
-Once published to the AUR it is one command:
-
-```bash
-omarchy pkg aur add tasks-gui      # or: yay -S tasks-gui
-```
-
-### Option B — per-user (no root)
+**Or install for just your user (no root):**
 
 ```bash
 git clone https://github.com/dexter-morgan-oss/omarchy-tasks
 cd omarchy-tasks
-./install.sh
+./install.sh           # builds into ~/.local/bin, then wires up the desktop
 ```
 
-`install.sh` compiles the GUI, installs everything to `~/.local/bin`, installs
-the app icon, and then runs `tasks-setup-user` for you. Make sure
-`~/.local/bin` is on your `PATH`.
+Then launch with **Super + Shift + T** (pressing it again focuses the window),
+or run `tasks-gui`. `tasks-setup-user` is **idempotent** — re-run it any time to
+repair the launcher entry, Omarchy menu row and keybinding.
 
-### What `tasks-setup-user` wires up
+> **Requirements:** `gtk4`, `jansson`, `python`; to build, `gcc` + `pkgconf`.
+> `sudo pacman -S --needed gtk4 jansson gcc pkgconf`
+>
+> A `PKGBUILD` is included, so `makepkg` works straight from a clone. The
+> package is not yet in the AUR; once published, `yay -S tasks-gui` will do the
+> whole install in one step.
 
-| Thing | Where |
-|-------|-------|
-| Launcher entry | `~/.local/share/applications/org.omarchy.tasks.desktop` |
-| Omarchy menu row | `~/.config/omarchy/extensions/omarchy-menu.jsonc` (created if missing) |
-| Keybinding | `SUPER + SHIFT + T` appended to `~/.config/hypr/bindings.lua` |
-
-It is **idempotent** — re-run it any time to repair the integration. It backs up
-`bindings.lua` before editing and validates the change with `hyprctl reload` +
-`hyprctl configerrors`. Then launch with **Super + Shift + T** (pressing it again
-focuses the existing window), or type `tasks` in the launcher.
-
-## Use
+## Quick start
 
 | Action | How |
 |--------|-----|
-| Add | **click empty column space**, or `Ctrl+N` |
-| Complete | **drag into Done** (drag back out to reopen) |
-| Move / reorder | **drag** between or within columns |
-| Priority | shown by **title colour**; click the **dot** to cycle high → normal → low |
-| Rename | **double-click** a row, or right-click → Rename |
-| Due date | right-click → Due date (`today` / `tomorrow` / `YYYY-MM-DD` / `off`) |
-| Delete | right-click → Delete, or `Delete` / `Backspace` / `Ctrl+D` |
-| Undo | `Ctrl+Z` |
-| Search | `Ctrl+F` |
-| Clear Done | `Ctrl+Shift+D`, or right-click the Done header |
+| **Add** | click empty column space, or `Ctrl+N` |
+| **Move / reorder** | drag a card |
+| **Complete** | drag into **Done** (drag back out to reopen) |
+| **Priority** | click the coloured dot — high · normal · low |
+| **Rename** | double-click a card, or right-click → Rename |
+| **Due date** | right-click → Due date (`today` / `tomorrow` / `YYYY-MM-DD` / `off`) |
+| **Delete** | `Delete`, `Backspace`, `Ctrl+D`, or right-click → Delete |
+| **Undo** | `Ctrl+Z` |
+| **Search** | `Ctrl+F` |
+| **Clear Done** | `Ctrl+Shift+D`, or right-click the Done header |
 
-The add box understands `!high`, `.low`, and a trailing date:
+The add box understands priority markers and a trailing date:
 
 ```
-!write release notes tomorrow    # ! = high priority, date at the end
+!write release notes tomorrow    # ! = high priority
 .stock the pantry                # . = low priority
-fix flaky test 2026-11-01        # plain + explicit date
+fix flaky test 2026-02-01        # explicit date
 ```
 
-Prefer the terminal? The CLI and GUI share one store:
+## CLI
+
+The CLI and GUI read and write the same file, so you can mix them freely:
 
 ```bash
-tasks add "buy milk"              tasks add "ship v1" -p high --due tomorrow
-tasks list [--all]                tasks done 2     # -> Done column
-tasks open 2                      tasks rm 3
-tasks clear-done
+tasks list                       # what's on the board
+tasks add "buy milk"
+tasks add "ship v1" !high tomorrow
+tasks done 3                     # complete task id 3
+tasks rm 3                       # delete it
+tasks clear-done                 # empty the Done column
 ```
 
-Running `tasks` with no arguments opens a vim-style TUI. See
-[GUIDE.md](GUIDE.md) for the full walkthrough.
+Run `tasks` with no arguments for an interactive TUI. Full walkthrough:
+[GUIDE.md](GUIDE.md).
+
+## Features
+
+- **To Do · In Progress · Done**, each column stretching with the window
+- **Drag-only completion** — no key moves a task between columns
+- **Priority** shown by title colour plus a clickable dot
+- **Follows your Omarchy theme** — reads `colors.toml` and recolours live when
+  you switch, falling back to a built-in palette
+- **Rotating shortcut ticker** along the bottom, so the board stays uncluttered
+- **Undo** any Delete / Clear Done with `Ctrl+Z`
+- **Due-date notifications** once a day for overdue and due-today tasks
+- **One JSON file** — no database, no daemon, no server
 
 ## Configuration
 
-The GUI reads an optional ini file at
-`~/.config/omarchy-tasks/config.ini` (created on demand — nothing is written
-unless you make the file yourself):
+Optional. Create `~/.config/omarchy-tasks/config.ini`:
 
 ```ini
-[general]
-follow_theme = true                     # repaint using the active Omarchy theme (default true)
-notify_due   = true                     # desktop notification for due/overdue tasks (default true)
-font         = JetBrainsMono Nerd Font  # UI font family (default: the Omarchy mono font)
-font_size    = 13                       # base size in px; the whole scale derives from it
+font         = JetBrainsMono Nerd Font   # UI font family
+font_size    = 13                        # base size in px; the whole scale derives from it
+follow_theme = true                      # follow the active Omarchy theme
+notify_due   = true                      # once-a-day due notifications
 ```
 
-`follow_theme` and `notify_due` default to `true`, so the app follows your theme
-and reminds you about due tasks out of the box. `font`/`font_size` default to the
-Omarchy mono font at 13px; every element size scales from `font_size` (titles
-+1px, captions −1px, badges −2px), so bump it once to make the whole board
-larger. The `[general]` header is optional.
-
-**Theming.** When `follow_theme` is on, the app parses the same
-`colors.toml` Omarchy writes for your current theme (background, foreground,
-accent, muted, red/green/yellow, …) and builds its stylesheet from it, keeping
-the window translucent with GTK CSS only — no Hyprland config is touched. A
-`GFileMonitor` watches the file, so switching themes with
-`omarchy theme set …` recolours the window live. If the file is missing or
-unreadable the built-in deep-blue palette is used.
-
-**Due notifications.** At startup, and then every 15 minutes, the app sends a
-single summary notification when any not-done task is due today or overdue —
-at most once per calendar day. Set `notify_due = false` to disable it.
+`font`/`font_size` default to the Omarchy mono font at 13px; titles, captions
+and badges scale from `font_size`, so bump it once to resize the whole board.
+`follow_theme` and `notify_due` default to `true`.
 
 ## Storage
 
-Everything lives in one file: `~/.local/share/tasks/tasks.json`
-(`$XDG_DATA_HOME/tasks/tasks.json`). Each task has a `status`
-(`todo`/`progress`/`done`); the legacy `done` boolean stays in sync so the CLI
-keeps working. Back it up by copying that one file.
+Everything lives in one file, so backing up is just copying it:
+
+```
+~/.local/share/tasks/tasks.json          # $XDG_DATA_HOME/tasks/tasks.json
+```
 
 Writes are **atomic** (a temp file is flushed and renamed over the store), so a
-crash mid-save can never leave a half-written file. If the store is ever
-unreadable, both the GUI and CLI move it aside to `tasks.json.corrupt-<stamp>`
-instead of overwriting it, then start from an empty board — your data is kept
-for recovery. `next_id` is also re-derived from the real maximum id on load and
-save, so a stale counter can't mint duplicate ids when the CLI and GUI write
-the same store.
+crash can never leave a half-written file. If the store is ever unreadable, both
+the GUI and CLI move it aside to `tasks.json.corrupt-<stamp>` instead of
+overwriting it, then start from an empty board — nothing is lost.
 
 ## Uninstall
 
@@ -166,54 +130,23 @@ the same store.
 ./uninstall.sh --data     # also delete the task store
 ```
 
-Or, if installed via `makepkg`: `sudo pacman -Rns tasks-gui`.
+If you installed from the package: `sudo pacman -Rns tasks-gui`.
 
 ## Development
 
-Build the GUI:
-
 ```bash
-gcc -O2 -Wall -Wextra $(pkg-config --cflags gtk4 jansson) tasks-gui.c \
-    -o tasks-gui $(pkg-config --libs gtk4 jansson) -lm
-```
+# build the GUI
+gcc -O2 -Wall -Wextra $(pkg-config --cflags gtk4 jansson) \
+    tasks-gui.c -o tasks-gui $(pkg-config --libs gtk4 jansson) -lm
 
-### Tests
-
-Everything is covered by a single runner (stdlib Python 3 only — no pytest
-needed). The GUI tests need a session with `WAYLAND_DISPLAY` or `DISPLAY`;
-they self-skip when run headless.
-
-```bash
+# run the whole test suite
 bash tests/run_all.sh
 ```
 
-| Suite | What it covers |
-| --- | --- |
-| `tests/test_taskstore.py` | storage layer: load/save round-trip, atomic writes, normalisation, `parse_due`, ids, sorting |
-| `tests/test_cli.py` | `tasks` end-to-end: add / priority / due / list / done / open / rm / clear-done, exit codes |
-| `tests/test_interop.py` | the CLI ↔ GUI `tasks.json` contract (field types, statuses, legacy `done`-only stores, due normalisation) |
-| `tests/gui_selftest.sh` | builds `tasks-gui` with `-Wall -Wextra -Werror`, then runs its embedded selftests |
-
-The GUI has two built-in self-test modes (**150 checks**; handlers are driven
-directly so they run in a plain GTK loop). Besides the drag/keyboard/rename/
-context-menu/JSON-contract paths, they cover the config parser, the Omarchy
-`colors.toml` parser and generated CSS (including that a parsed palette is
-installed into the live stylesheet), the Undo stack for Delete / Clear Done,
-and the due-date notification selection, summary body and once-a-day gate:
-
-```bash
-# behavioural: drives the real handlers against a throwaway empty store
-TASKS_SELFTEST=1 XDG_DATA_HOME=$(mktemp -d) ./tasks-gui
-
-# load: asserts the GUI reads a CLI/foreign tasks.json correctly
-TASKS_SELFTEST_LOAD=1 XDG_DATA_HOME=<dir-with-tasks.json> ./tasks-gui
-```
-
-Each prints `PASS`/`FAIL` lines and a summary, and exits non-zero on failure.
-
-CI (`.github/workflows/ci.yml`) builds the GUI with `-Werror` and runs the
-whole suite under Xvfb on every push and pull request.
+The suite covers storage, the CLI, CLI/GUI interop, and the GUI itself, which
+runs **156 embedded checks** driving its real handlers. GUI tests skip cleanly
+on a headless machine.
 
 ## License
 
-[MIT](LICENSE) © 2026 Ragul.
+[MIT](LICENSE) © Ragul

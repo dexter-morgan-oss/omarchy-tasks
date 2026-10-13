@@ -41,7 +41,7 @@ from taskstore import (
 )
 
 APP = "tasks"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 PRIORITY_MARK = {"high": "!", "med": " ", "low": "."}
 

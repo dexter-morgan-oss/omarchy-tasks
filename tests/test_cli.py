@@ -7,6 +7,7 @@ Run:  python3 tests/test_cli.py
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -51,7 +52,12 @@ class CliTestCase(unittest.TestCase):
 
 class TestVersion(CliTestCase):
     def test_version(self):
-        self.assertEqual(self.cli("version").strip(), "1.1.0")
+        # Read the expected version from the source so a release bump only has
+        # to touch tasks.py / tasks-gui.c, not the test.
+        src = (ROOT / "tasks.py").read_text(encoding="utf-8")
+        m = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M)
+        self.assertIsNotNone(m, "VERSION not found in tasks.py")
+        self.assertEqual(self.cli("version").strip(), m.group(1))
 
 
 class TestAdd(CliTestCase):

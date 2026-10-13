@@ -29,7 +29,7 @@
 #include <unistd.h>
 
 #define APP_ID  "org.omarchy.tasks"
-#define VERSION "1.1.0"   /* keep in sync with tasks.py */
+#define VERSION "1.2.0"   /* keep in sync with tasks.py */
 
 /* ---- model ------------------------------------------------------------ */
 
