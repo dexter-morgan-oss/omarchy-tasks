@@ -1,4 +1,4 @@
-# Maintainer: Ragul <dexter-morgan-oss@users.noreply.github.com>
+# Maintainer: P Ragul <dexter-morgan-oss@users.noreply.github.com>
 #
 # Tasks — a minimal 3-column kanban task manager for Omarchy (GTK4 GUI + CLI).
 #

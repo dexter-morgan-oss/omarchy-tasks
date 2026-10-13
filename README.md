@@ -4,12 +4,7 @@ A minimal **3-column kanban board for Omarchy**, built for the keyboard. The GUI
 is a small native **GTK4** app in C, so it starts instantly and stays light; a
 zero-dependency **CLI/TUI** shares the very same JSON store.
 
-```
-┌─ To Do ──────────┐  ┌─ In Progress ────┐  ┌─ Done ───────────┐
-│ ○ ship v1        │  │ ● review PR      │  │ ✓ write notes    │
-│ ● buy milk       │  │                  │  │                  │
-└──────────────────┘  └──────────────────┘  └──────────────────┘
-```
+![Tasks — a three-column kanban board following the active Omarchy theme](docs/board.png)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -20,11 +15,16 @@ zero-dependency **CLI/TUI** shares the very same JSON store.
 ```bash
 git clone https://github.com/dexter-morgan-oss/omarchy-tasks
 cd omarchy-tasks
-makepkg -si            # builds from the released tag tarball
-tasks-setup-user       # add launcher, menu row and Super+Shift+T
+makepkg -si            # builds from the released tarball and installs it
+tasks-setup-user       # launcher entry, Omarchy menu row, Super+Shift+T
 ```
 
-**Or install for just your user (no root):**
+Launch with **Super + Shift + T** (press it again to focus the window), or run
+`tasks-gui`. `tasks-setup-user` is **idempotent** — re-run it any time to repair
+the launcher entry, menu row and keybinding.
+
+<details>
+<summary>Install for just your user (no root)</summary>
 
 ```bash
 git clone https://github.com/dexter-morgan-oss/omarchy-tasks
@@ -32,15 +32,12 @@ cd omarchy-tasks
 ./install.sh           # builds into ~/.local/bin, then wires up the desktop
 ```
 
-Then launch with **Super + Shift + T** (pressing it again focuses the window),
-or run `tasks-gui`. `tasks-setup-user` is **idempotent** — re-run it any time to
-repair the launcher entry, Omarchy menu row and keybinding.
+</details>
 
-> **Requirements:** `gtk4`, `jansson`, `python`; to build, `gcc` + `pkgconf`.
+> **Requirements:** `gtk4`, `jansson`, `python`; `gcc` and `pkgconf` to build.
 > `sudo pacman -S --needed gtk4 jansson gcc pkgconf`
 >
-> A `PKGBUILD` is included, so `makepkg` works straight from a clone. The
-> package is not yet in the AUR; once published, `yay -S tasks-gui` will do the
+> An AUR package is planned — once published, `yay -S tasks-gui` will do the
 > whole install in one step.
 
 ## Quick start
@@ -94,6 +91,19 @@ Run `tasks` with no arguments for an interactive TUI. Full walkthrough:
 - **Due-date notifications** once a day for overdue and due-today tasks
 - **One JSON file** — no database, no daemon, no server
 
+<details>
+<summary>More screenshots</summary>
+
+Search:
+
+![Searching the board with Ctrl+F](docs/search.png)
+
+Adding a task with a priority marker and a due date:
+
+![Adding a task](docs/add.png)
+
+</details>
+
 ## Configuration
 
 Optional. Create `~/.config/omarchy-tasks/config.ini`:
@@ -135,12 +145,9 @@ If you installed from the package: `sudo pacman -Rns tasks-gui`.
 ## Development
 
 ```bash
-# build the GUI
-gcc -O2 -Wall -Wextra $(pkg-config --cflags gtk4 jansson) \
-    tasks-gui.c -o tasks-gui $(pkg-config --libs gtk4 jansson) -lm
-
-# run the whole test suite
-bash tests/run_all.sh
+make            # build the GUI
+make test       # run the whole suite
+make install    # per-user install into ~/.local/bin
 ```
 
 The suite covers storage, the CLI, CLI/GUI interop, and the GUI itself, which
@@ -149,4 +156,4 @@ on a headless machine.
 
 ## License
 
-[MIT](LICENSE) © Ragul
+[MIT](LICENSE) © P Ragul
