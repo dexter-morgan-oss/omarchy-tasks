@@ -16,7 +16,7 @@ depends=('gtk4' 'jansson' 'python')
 makedepends=('gcc' 'pkgconf')
 install="$pkgname.install"
 source=("omarchy-tasks-$pkgver.tar.gz::https://github.com/dexter-morgan-oss/omarchy-tasks/archive/v$pkgver.tar.gz")
-sha256sums=('a0457ae76a421fbcc5b25584b834af29c4578cf96223da710fa2a4f4488d6d2d')
+sha256sums=('c91950c2174663935bfff357094462c9b812db34af8e1cf05ffd395fb3f010a2')
 
 build() {
   cd "omarchy-tasks-$pkgver"
